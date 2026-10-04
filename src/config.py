@@ -29,17 +29,17 @@ FORCE_X11_MSS: bool = os.getenv("FORCE_X11_MSS", "False").lower() in ["true", "1
 
 # Regiões de Interesse (ROIs) na Tela (Resolução padrão da mesa)
 POT_ROI: Dict[str, int] = {
-    "top": int(os.getenv("POT_ROI_TOP", 210)),
-    "left": int(os.getenv("POT_ROI_LEFT", 850)),
-    "width": int(os.getenv("POT_ROI_WIDTH", 220)),
-    "height": int(os.getenv("POT_ROI_HEIGHT", 60)),
+    "top": int(os.getenv("POT_ROI_TOP", 150)),
+    "left": int(os.getenv("POT_ROI_LEFT", 800)),
+    "width": int(os.getenv("POT_ROI_WIDTH", 320)),
+    "height": int(os.getenv("POT_ROI_HEIGHT", 150)),
 }
 
 ACTION_BUTTONS_ROI: Dict[str, int] = {
-    "top": int(os.getenv("ACTION_ROI_TOP", 870)),
-    "left": int(os.getenv("ACTION_ROI_LEFT", 1200)),
-    "width": int(os.getenv("ACTION_ROI_WIDTH", 650)),
-    "height": int(os.getenv("ACTION_ROI_HEIGHT", 150)),
+    "top": int(os.getenv("ACTION_ROI_TOP", 750)),
+    "left": int(os.getenv("ACTION_ROI_LEFT", 1100)),
+    "width": int(os.getenv("ACTION_ROI_WIDTH", 800)),
+    "height": int(os.getenv("ACTION_ROI_HEIGHT", 300)),
 }
 
 # Limiares de Visão Computacional
