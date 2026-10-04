@@ -288,12 +288,18 @@ def make_decision(
                     h_vals = [val_map[c[:-1].upper()] for c in hero_cards if len(c) >= 2]
                     max_board = max(b_vals) if b_vals else 0
                     
+                    # Checa se é um overpair
+                    is_overpair = all(v > max_board for v in h_vals) if h_vals else False
+                    
                     # Checa se o Par é com a carta mais alta do board (Top Pair)
                     is_top_pair = any(v == max_board for v in h_vals)
-                    # Checa se a outra carta do Hero é K ou A (Top Kicker)
-                    has_top_kicker = any(v >= 13 for v in h_vals)
                     
-                    if is_top_pair and has_top_kicker:
+                    # Checa se o kicker é K ou A (Top Kicker)
+                    # O kicker é a carta que NÃO formou o top pair
+                    kicker_vals = [v for v in h_vals if v != max_board]
+                    has_top_kicker = any(v >= 13 for v in kicker_vals) if kicker_vals else False
+                    
+                    if is_overpair or (is_top_pair and has_top_kicker):
                         is_strong_hand = True
                         
                     has_pair = True
