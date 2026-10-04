@@ -29,22 +29,22 @@ FORCE_X11_MSS: bool = os.getenv("FORCE_X11_MSS", "False").lower() in ["true", "1
 
 # Regiões de Interesse (ROIs) na Tela (Resolução padrão da mesa)
 POT_ROI: Dict[str, int] = {
-    "top": int(os.getenv("POT_ROI_TOP", 150)),
-    "left": int(os.getenv("POT_ROI_LEFT", 800)),
-    "width": int(os.getenv("POT_ROI_WIDTH", 320)),
-    "height": int(os.getenv("POT_ROI_HEIGHT", 150)),
+    "top": int(os.getenv("POT_ROI_TOP", 210)),
+    "left": int(os.getenv("POT_ROI_LEFT", 850)),
+    "width": int(os.getenv("POT_ROI_WIDTH", 220)),
+    "height": int(os.getenv("POT_ROI_HEIGHT", 60)),
 }
 
 ACTION_BUTTONS_ROI: Dict[str, int] = {
-    "top": int(os.getenv("ACTION_ROI_TOP", 750)),
-    "left": int(os.getenv("ACTION_ROI_LEFT", 1100)),
-    "width": int(os.getenv("ACTION_ROI_WIDTH", 800)),
-    "height": int(os.getenv("ACTION_ROI_HEIGHT", 300)),
+    "top": int(os.getenv("ACTION_ROI_TOP", 870)),
+    "left": int(os.getenv("ACTION_ROI_LEFT", 1200)),
+    "width": int(os.getenv("ACTION_ROI_WIDTH", 650)),
+    "height": int(os.getenv("ACTION_ROI_HEIGHT", 150)),
 }
 
 # Limiares de Visão Computacional
-DEFAULT_RANK_THRESHOLD: float = float(os.getenv("RANK_THRESHOLD", 0.68))
-DEFAULT_SUIT_THRESHOLD: float = float(os.getenv("SUIT_THRESHOLD", 0.68))
+DEFAULT_RANK_THRESHOLD: float = float(os.getenv("RANK_THRESHOLD", 0.60))
+DEFAULT_SUIT_THRESHOLD: float = float(os.getenv("SUIT_THRESHOLD", 0.60))
 CARD_BRIGHTNESS_THRESHOLD: int = int(os.getenv("CARD_BRIGHTNESS_THRESHOLD", 150))
 MAX_GREEN_RATIO: float = float(os.getenv("MAX_GREEN_RATIO", 0.40))
 
