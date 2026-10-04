@@ -487,6 +487,14 @@ def run_live(poll_interval: float = POLL_INTERVAL):
             if pot_size <= 0:
                 pot_size = app.last_analysis.get("pot_size", 85.0) if app.last_analysis else 85.0
 
+            # DETECÇÃO EXPLÍCITA DE NOVA MÃO (Especial para Folds no Pre-Flop):
+            # Se a mesa está vazia e o pote caiu pela metade, com certeza é uma nova rodada.
+            last_pot = app.last_analysis.get("pot_size", 0) if app.last_analysis else 0
+            if len(detected_cards) == 0 and last_pot > 0 and pot_size < last_pot * 0.5:
+                print(f"[INFO] Pote caiu de {last_pot} para {pot_size}. Nova rodada! Limpando Hero Cards.")
+                app.hero_cards = []
+                already_has_valid_hand = False
+
             app.hero_stack = extract_hero_stack(frame, last_stack=app.hero_stack)
             bet_to_call = turn_info["bet_to_call"]
 
