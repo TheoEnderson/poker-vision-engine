@@ -1,0 +1,42 @@
+{
+  "ReplayPoker": {
+    "POT_ROI": {
+      "top": 210,
+      "left": 850,
+      "width": 220,
+      "height": 60
+    },
+    "ACTION_BUTTONS_ROI": {
+      "top": 870,
+      "left": 1200,
+      "width": 650,
+      "height": 150
+    },
+    "THRESHOLDS": {
+      "RANK_THRESHOLD": 0.68,
+      "SUIT_THRESHOLD": 0.68,
+      "CARD_BRIGHTNESS_THRESHOLD": 150,
+      "MAX_GREEN_RATIO": 0.40
+    }
+  },
+  "PokerStars": {
+    "POT_ROI": {
+      "top": 300,
+      "left": 800,
+      "width": 200,
+      "height": 50
+    },
+    "ACTION_BUTTONS_ROI": {
+      "top": 800,
+      "left": 1100,
+      "width": 600,
+      "height": 120
+    },
+    "THRESHOLDS": {
+      "RANK_THRESHOLD": 0.70,
+      "SUIT_THRESHOLD": 0.70,
+      "CARD_BRIGHTNESS_THRESHOLD": 140,
+      "MAX_GREEN_RATIO": 0.35
+    }
+  }
+}
