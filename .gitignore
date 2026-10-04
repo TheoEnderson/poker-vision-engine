@@ -68,3 +68,6 @@ coverage.xml
 debug_*.png
 temp_*.png
 board_template.png
+data/
+tests/debug_archive/
+assets/unknown_cards/

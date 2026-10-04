@@ -395,7 +395,7 @@ def detect_board(
 def find_and_detect_hero_cards(
     image_path_or_frame: Union[str, Path, np.ndarray] = "mesa_6.png",
     board_coords: Optional[Dict[str, int]] = None,
-    threshold: float = 0.45,
+    threshold: float = DEFAULT_RANK_THRESHOLD,
     verbose: bool = True
 ) -> List[str]:
     """
@@ -494,28 +494,16 @@ def find_and_detect_hero_cards(
         sgray = cv2.cvtColor(slot_img, cv2.COLOR_BGR2GRAY)
         shsv = cv2.cvtColor(slot_img, cv2.COLOR_BGR2HSV)
 
-        # Remove feltro verde (evita que o fundo verde seja considerado como black_mask)
-        green_mask = cv2.inRange(shsv, np.array([30, 40, 30]), np.array([90, 255, 255]))
-        
-        black_mask = (sgray < 185) & (green_mask == 0)
+        black_mask = (sgray < 185)
         h, s, v = shsv[:, :, 0], shsv[:, :, 1], shsv[:, :, 2]
-        red_mask = ((h < 15) | (h > 165)) & (s > 80) & (v > 80)
+        red_mask = ((h < 15) | (h > 165)) & (s > 90) & (v > 80)
         sbin = ((black_mask | red_mask).astype(np.uint8)) * 255
 
         rank_reg = sbin[:36, :]
-        suit_reg = sbin[16:, :35]
-
-        # Busca o primeiro pixel útil para pular margens pretas/verdes no topo
-        y_idx, _ = np.where(sbin > 0)
-        if len(y_idx) > 0:
-            min_y = np.min(y_idx)
-            # Garante que não vai sair dos limites da imagem
-            if min_y + 36 <= sbin.shape[0]:
-                rank_reg = sbin[min_y:min_y+36, :]
-                suit_reg = sbin[min_y+16:min_y+51, :35]
-
         best_r, best_r_score = match_glyph_multiscale(rank_reg, ranks)
+
         candidate_suits = filter_suits_by_color(slot_img[16:, :35], suits)
+        suit_reg = sbin[16:, :35]
         best_s, best_s_score = match_glyph_multiscale(suit_reg, candidate_suits)
 
         card_str = (
