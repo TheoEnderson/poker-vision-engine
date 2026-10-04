@@ -210,8 +210,7 @@ def detect_turn_and_bet_to_call(
     for c in cnts:
         bx, by, bw, bh = cv2.boundingRect(c)
         area = cv2.contourArea(c)
-        # Removido a restrição hardcoded '>= 970' para suportar navegadores que não estão em tela cheia
-        if area > 8000 and bh > 40 and (search_y1 + by >= 800):
+        if area > 8000 and bh > 40 and (search_y1 + by >= 970):
             action_buttons.append((bx, by, bw, bh, area))
 
     if not action_buttons:

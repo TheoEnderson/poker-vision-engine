@@ -331,7 +331,7 @@ def detect_board(
         board = board[bt : bt + bh, bl : bl + bw]
         height, width = board.shape[:2]
     elif width > 600 and height > 400:
-        bt, bl, bw, bh = 380, 680, 550, 180
+        bt, bl, bw, bh = 415, 734, 449, 109
         board = board[bt : bt + bh, bl : bl + bw]
         height, width = board.shape[:2]
 

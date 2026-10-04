@@ -1,0 +1,16 @@
+timestamp,state,hero_cards,board_cards,pot_size,bet_to_call,hero_stack,pot_odds_pct,equity_pct,ev_chips,recommendation,reasoning
+2026-10-04 18:02:55,PRE_FLOP,5s-Kh,,10.0,0.0,1000.0,0.0,15.4,1.54,CHECK,Mão lixo (Tier 4) com Check gratuito.
+2026-10-04 18:03:10,PRE_FLOP,5s-Kh,,18.0,0.0,1000.0,0.0,15.235,2.7422999999999997,CHECK,Mão lixo (Tier 4) com Check gratuito.
+2026-10-04 18:03:38,PRE_FLOP,5s-Kh,,54.0,0.0,1428.0,0.0,18.9,10.206000000000001,CHECK,Mão lixo (Tier 4) com Check gratuito.
+2026-10-04 18:16:31,PRE_FLOP,4h-Jd,,16.0,0.0,1000.0,0.0,12.840000000000002,2.0544000000000002,CHECK,Mão lixo (Tier 4) com Check gratuito.
+2026-10-04 18:17:10,PRE_FLOP,4h-Jd,,20.0,4.0,1476.0,16.666666666666664,12.645000000000001,-0.9026000000000007,FOLD,Mão lixo (Tier 4) fora de posição contra aposta. FOLD imediato.
+2026-10-04 18:30:47,PRE_FLOP,7c-5c,,13.0,0.0,1000.0,0.0,16.669999999999998,2.1670999999999996,CHECK,Mão lixo (Tier 4) com Check gratuito.
+2026-10-04 18:30:49,PRE_FLOP,7c-5c,,14.0,0.0,1000.0,0.0,17.15,2.401,CHECK,Mão lixo (Tier 4) com Check gratuito.
+2026-10-04 18:33:14,PRE_FLOP,8d-As,,256.0,250.0,1000.0,49.40711462450593,41.07,-37.66079999999998,FOLD,Mão lixo (Tier 4) fora de posição contra aposta. FOLD imediato.
+2026-10-04 18:33:48,PRE_FLOP,8d-As,,3.0,1.0,1000.0,25.0,30.259999999999998,0.22769999999999996,CALL,Aposta barata (<2.5% do stack) com mão suited/potencial. Justificado por Implied Odds para buscar Flush/Trinca.
+2026-10-04 18:34:08,PRE_FLOP,8d-As,,4.0,0.0,1000.0,0.0,22.915,0.9166,CHECK,Mão lixo (Tier 4) com Check gratuito.
+2026-10-04 18:34:09,FLOP,8d-As,9d-Jh-Qd,4.0,0.0,1000.0,0.0,19.49,0.7796,CHECK,Aposta a pagar é 0 e Equity moderada (19.5% <= 55%). Check gratuito para ver o próximo estágio.
+2026-10-04 18:34:20,TURN,8d-As,9d-Jh-Qd-3c,4.0,0.0,1000.0,0.0,10.81,0.4324,CHECK,Aposta a pagar é 0 e Equity moderada (10.8% <= 55%). Check gratuito para ver o próximo estágio.
+2026-10-04 18:34:26,RIVER,8d-As,9d-Jh-Qd-3c-10s,4.0,0.0,1000.0,0.0,44.64,1.7856,CHECK,Aposta a pagar é 0 e Equity moderada (44.6% <= 55%). Check gratuito para ver o próximo estágio.
+2026-10-04 18:34:34,RIVER,8d-As,9d-Jh-Qd-3c-10s,8.0,4.0,1000.0,33.33333333333333,45.205,1.85,CALL,EV positivo (+1.85 fichas) e Equity (45.2%) superior às Pot Odds (33.3%). Pagar a aposta é matematicamente lucrativo.
+2026-10-04 18:34:41,RIVER,8d-As,9d-Jh-Qd-3c-10s,8.0,8.0,1000.0,50.0,45.080000000000005,0.08880000000000043,FOLD,Equity insuficiente (45.1%) frente às Pot Odds exigidas (50.0%). Fold recomendado para preservar stack.

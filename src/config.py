@@ -43,8 +43,8 @@ ACTION_BUTTONS_ROI: Dict[str, int] = {
 }
 
 # Limiares de Visão Computacional
-DEFAULT_RANK_THRESHOLD: float = float(os.getenv("RANK_THRESHOLD", 0.60))
-DEFAULT_SUIT_THRESHOLD: float = float(os.getenv("SUIT_THRESHOLD", 0.60))
+DEFAULT_RANK_THRESHOLD: float = float(os.getenv("RANK_THRESHOLD", 0.68))
+DEFAULT_SUIT_THRESHOLD: float = float(os.getenv("SUIT_THRESHOLD", 0.68))
 CARD_BRIGHTNESS_THRESHOLD: int = int(os.getenv("CARD_BRIGHTNESS_THRESHOLD", 150))
 MAX_GREEN_RATIO: float = float(os.getenv("MAX_GREEN_RATIO", 0.40))
 
