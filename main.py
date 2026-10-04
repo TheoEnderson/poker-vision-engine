@@ -32,6 +32,7 @@ from src.engine import (
     get_hand_category_name,
     make_decision,
 )
+from src.engine.dataset_logger import DatasetLogger
 from src.ocr import (
     detect_turn_and_bet_to_call,
     extract_hero_stack,
@@ -69,6 +70,7 @@ class PokerAnalyticsApp:
         auto_detect_turn: bool = True
     ):
         self.state_machine = PokerHandStateMachine(allow_initial_sync=allow_initial_sync)
+        self.dataset_logger = DatasetLogger(str(PROJECT_ROOT / "dataset_partidas.csv"))
         self.hero_cards = list(hero_cards) if hero_cards is not None else []
         self.hero_stack = hero_stack
         self.num_opponents = num_opponents
@@ -324,6 +326,13 @@ class PokerAnalyticsApp:
                 "sim_time": 0.0,
                 "recalculated": False,
             }
+
+        # Grava os dados da simulação no CSV de Machine Learning
+        if analysis.get("recalculated") and analysis.get("state") != "WAITING_HAND":
+            try:
+                self.dataset_logger.log_state(analysis)
+            except Exception as e:
+                print(f"[AVISO] Falha ao gravar dataset: {e}")
 
         self.last_analysis = analysis
 

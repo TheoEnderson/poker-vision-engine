@@ -24,6 +24,9 @@ UNKNOWN_CARDS_DIR = ASSETS_DIR / "unknown_cards"
 # Identificador do Hero na Mesa
 HERO_IDENTIFIER: str = os.getenv("HERO_IDENTIFIER", "The_Ment_End")
 
+# Compatibilidade de SO / Captura de Tela
+FORCE_X11_MSS: bool = os.getenv("FORCE_X11_MSS", "False").lower() in ["true", "1", "yes"]
+
 # Regiões de Interesse (ROIs) na Tela (Resolução padrão da mesa)
 POT_ROI: Dict[str, int] = {
     "top": int(os.getenv("POT_ROI_TOP", 210)),
