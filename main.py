@@ -458,6 +458,19 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 app.num_opponents = DEFAULT_NUM_OPPONENTS
 
             hero_detected = find_and_detect_hero_cards(frame, verbose=False)
+
+            # QUEBRA DE LOCK POR AUSÊNCIA (A Prova de Balas):
+            # Quando você folda (ou a mão acaba), as cartas somem da mesa. 
+            # Se não encontrarmos a caixinha branca das cartas por 3 frames (1.5s), quebramos a trava.
+            if len(hero_detected) == 0:
+                app.hero_absence_frames = getattr(app, 'hero_absence_frames', 0) + 1
+                if app.hero_absence_frames >= 3:
+                    if getattr(app, 'hero_cards', []) != []:
+                        print("[INFO] Cartas do Hero sumiram da tela. Mão encerrada ou foldada. Limpando a trava.")
+                        app.hero_cards = []
+            else:
+                app.hero_absence_frames = 0
+
             has_valid_detected = (
                 hero_detected
                 and len(hero_detected) == 2
