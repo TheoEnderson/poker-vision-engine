@@ -117,23 +117,22 @@ def make_decision(
     recommended_amount = 0.0
     reason = ""
 
+    # === FILTRO DE RANGE (DESCONTO DE EQUITY POST-FLOP) ===
+    # Corrige o excesso de otimismo do Monte Carlo contra apostas adversárias
+    bet_ratio_pot = bet_to_call / pot_size if pot_size > 0 else 0.0
+    if state in ["FLOP", "TURN", "RIVER"] and bet_ratio_pot > 0.15:
+        if hero_cards and board_cards:
+            score = evaluate_7_cards(hero_cards + board_cards)
+            # Se o Hero tem apenas High Card (score[0] == 0) e não tem outs formidáveis
+            if score[0] == 0 and outs < 8:
+                equity = equity * 0.50 # Reduz à metade
+                ev = calculate_ev(equity, 100 - equity, 0.0, pot_size, bet_to_call)
+
     # 1. Blindagem de Sobrevivência contra All-Ins / Apostas Pesadas (>40% do stack)
     if bet_to_call > HEAVY_BET_STACK_RATIO * hero_stack and hero_stack > 0 and hero_cards:
         if state == "PRE_FLOP":
-            c1, c2 = hero_cards[0], hero_cards[1]
-            r1, s1 = c1[:-1].upper(), c1[-1].lower()
-            r2, s2 = c2[:-1].upper(), c2[-1].lower()
-            val_map = {
-                "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
-                "10": 10, "T": 10, "J": 11, "Q": 12, "K": 13, "A": 14
-            }
-            v1, v2 = val_map.get(r1, 0), val_map.get(r2, 0)
-
-            is_premium_pair = (r1 == r2 and v1 >= 11)  # JJ+
-            is_premium_ace = ((r1 == 'A' and v2 >= 13) or (r2 == 'A' and v1 >= 13))  # AK
-
-            is_tier_1_2 = is_premium_pair or is_premium_ace
-            if not is_tier_1_2:
+            tier = get_preflop_tier(hero_cards)
+            if tier > 2:
                 return {
                     "action": "FOLD",
                     "ev": ev,
@@ -142,7 +141,7 @@ def make_decision(
                     "bet_to_call": bet_to_call,
                     "pot_size": pot_size,
                     "recommended_amount": 0.0,
-                    "reason": "Aposta pesada/All-in (>40% do stack). Preservação de patrimônio contra range polarizado do vilão (mão insuficiente)."
+                    "reason": "Aposta pesada/All-in (>40% do stack). FOLD Mão insuficiente contra range polarizado."
                 }
         else:
             if board_cards:
@@ -156,14 +155,44 @@ def make_decision(
                         "bet_to_call": bet_to_call,
                         "pot_size": pot_size,
                         "recommended_amount": 0.0,
-                        "reason": "Aposta pesada/All-in (>40% do stack). Preservação de patrimônio contra range polarizado do vilão (Exige Dois Pares+)."
+                        "reason": "Aposta pesada/All-in (>40% do stack). FOLD exigiria no mínimo Dois Pares+."
                     }
 
-    # 2. Regra PRE_FLOP Estratégica (Tier 4 e Implied Odds)
+    # 2. Regra PRE_FLOP Estratégica (Aggressividade Premium e Folds Trash)
     if state == "PRE_FLOP" and hero_cards:
         bet_ratio = bet_to_call / hero_stack if hero_stack > 0 else 1.0
-        is_spec = is_speculative_hand(hero_cards)
+        tier = get_preflop_tier(hero_cards)
+        
+        # Agressividade Premium (Tier 1: AA, KK, QQ, JJ, AKs, AKo)
+        if tier == 1:
+            if bet_to_call > 0 and bet_ratio < 0.25:
+                # 3-Bet / Raise de Valor
+                raise_amount = min(hero_stack, round(bet_to_call * 3.0, 1))
+                return {
+                    "action": "RAISE",
+                    "ev": ev,
+                    "pot_odds": pot_odds,
+                    "equity": equity,
+                    "bet_to_call": bet_to_call,
+                    "pot_size": pot_size,
+                    "recommended_amount": raise_amount,
+                    "reason": "Mão Premium (Tier 1). RAISE/3-BET obrigatório para extrair valor e isolar oponentes."
+                }
+            elif bet_to_call == 0:
+                # Open Raise
+                raise_amount = min(hero_stack, max(1.0, round(pot_size * 0.75, 1)))
+                return {
+                    "action": "BET",
+                    "ev": ev,
+                    "pot_odds": pot_odds,
+                    "equity": equity,
+                    "bet_to_call": bet_to_call,
+                    "pot_size": pot_size,
+                    "recommended_amount": raise_amount,
+                    "reason": "Mão Premium (Tier 1). OPEN RAISE de valor."
+                }
 
+        is_spec = is_speculative_hand(hero_cards)
         if bet_to_call > 0 and bet_ratio <= PREFLOP_SPECULATIVE_BET_RATIO and is_spec:
             return {
                 "action": "CALL",
@@ -173,10 +202,9 @@ def make_decision(
                 "bet_to_call": bet_to_call,
                 "pot_size": pot_size,
                 "recommended_amount": bet_to_call,
-                "reason": "Aposta barata (<2.5% do stack) com mão suited/potencial. Justificado por Implied Odds para buscar Flush/Trinca."
+                "reason": "Aposta barata (<2.5% do stack) com mão suited/potencial. CALL por Implied Odds."
             }
 
-        tier = get_preflop_tier(hero_cards)
         if tier == 4:
             if bet_to_call > 0:
                 return {
@@ -232,91 +260,63 @@ def make_decision(
                 "reason": reason
             }
 
-    # 4. Regra de Estratégia Estrutural (Pre-Flop Override)
-    if state == "PRE_FLOP" and hero_cards and len(hero_cards) == 2 and bet_to_call > 0:
+    # 4. Regra de Micro-Aposta e Extração de Valor TPTK+ (Flop / Turn / River)
+    if state in ["FLOP", "TURN", "RIVER"] and bet_to_call > 0:
         bet_ratio = bet_to_call / hero_stack if hero_stack > 0 else 1.0
-
-        try:
-            c1, c2 = hero_cards[0], hero_cards[1]
-            r1, s1 = c1[:-1].upper(), c1[-1].lower()
-            r2, s2 = c2[:-1].upper(), c2[-1].lower()
-
-            is_pair = (r1 == r2)
-            is_suited = (s1 == s2)
-            has_ace = (r1 == 'A' or r2 == 'A')
-
-            val_map = {
-                "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
-                "10": 10, "T": 10, "J": 11, "Q": 12, "K": 13, "A": 14
-            }
-            v1, v2 = val_map.get(r1, 0), val_map.get(r2, 0)
-            high_card = max(v1, v2)
-            low_card = min(v1, v2)
-
-            is_broadway = (v1 >= 10 and v2 >= 10)
-            is_connector = (high_card - low_card == 1)
-
-            is_playable = False
-            reason_override = ""
-
-            if bet_ratio <= 0.15:
-                if is_pair:
-                    is_playable = True
-                    reason_override = "Pocket Pair na mão (Set Mining)."
-                elif has_ace:
-                    if bet_ratio <= 0.08 or v1 >= 10 or v2 >= 10:
-                        is_playable = True
-                        reason_override = "Mão com Ás (Ax) tem ótimo potencial de Top Pair."
-                elif is_broadway:
-                    is_playable = True
-                    reason_override = "Duas cartas altas (Broadways)."
-                elif is_suited and high_card >= 8:
-                    if bet_ratio <= 0.08:
-                        is_playable = True
-                        reason_override = "Cartas Suited (mesmo naipe). Potencial de Flush."
-                elif is_suited and is_connector and high_card >= 6:
-                    if bet_ratio <= 0.05:
-                        is_playable = True
-                        reason_override = "Suited Connectors (Sequência/Flush)."
-
-            if is_playable and (ev < 0 or equity < pot_odds):
-                return {
-                    "action": "CALL",
-                    "ev": ev,
-                    "pot_odds": pot_odds,
-                    "equity": equity,
-                    "bet_to_call": bet_to_call,
-                    "pot_size": pot_size,
-                    "recommended_amount": bet_to_call,
-                    "reason": f"Estratégia Pré-Flop Tática: {reason_override} Pagar a aposta é justificado pelo potencial da mão (Implied Odds)."
-                }
-        except Exception:
-            pass
-
-    # 5. Regra de Micro-Aposta e Implied Odds (Flop)
-    if state == "FLOP" and bet_to_call > 0:
-        bet_ratio = bet_to_call / hero_stack if hero_stack > 0 else 1.0
-        if bet_ratio <= MICRO_BET_STACK_RATIO:
-            has_draw = outs >= 4
-            has_pair = False
-            has_overcards = False
-            if hero_cards and board_cards:
-                score = evaluate_7_cards(hero_cards + board_cards)
-                has_pair = (score[0] >= 1)
-
+        
+        # Identificação de Força da Mão
+        is_strong_hand = False
+        has_draw = outs >= 4
+        has_pair = False
+        has_overcards = False
+        
+        if hero_cards and board_cards:
+            score = evaluate_7_cards(hero_cards + board_cards)
+            
+            # Checa Top Pair Top Kicker (TPTK) ou melhor (Two Pair, Set, etc)
+            # score[0] = Categoria da mão (1 = Par, 2 = Dois Pares...)
+            if score[0] >= 2:
+                is_strong_hand = True
+            elif score[0] == 1:
+                # É um par. Vamos ver se é Top Pair
                 val_map = {
                     "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
                     "10": 10, "T": 10, "J": 11, "Q": 12, "K": 13, "A": 14
                 }
                 try:
-                    h_vals = [val_map[c[:-1].upper()] for c in hero_cards if len(c) >= 2]
                     b_vals = [val_map[c[:-1].upper()] for c in board_cards if len(c) >= 2]
-                    if h_vals and b_vals and min(h_vals) > max(b_vals):
+                    h_vals = [val_map[c[:-1].upper()] for c in hero_cards if len(c) >= 2]
+                    max_board = max(b_vals) if b_vals else 0
+                    
+                    # Checa se o Par é com a carta mais alta do board (Top Pair)
+                    is_top_pair = any(v == max_board for v in h_vals)
+                    # Checa se a outra carta do Hero é K ou A (Top Kicker)
+                    has_top_kicker = any(v >= 13 for v in h_vals)
+                    
+                    if is_top_pair and has_top_kicker:
+                        is_strong_hand = True
+                        
+                    has_pair = True
+                    if h_vals and b_vals and min(h_vals) > max_board:
                         has_overcards = True
                 except Exception:
                     pass
 
-            if has_draw or has_pair or has_overcards:
+        if bet_ratio <= MICRO_BET_STACK_RATIO:
+            if is_strong_hand:
+                # Oponente fez Micro-Aposta e Hero tem TPTK+
+                raise_amount = min(hero_stack, round(bet_to_call * 3.5, 1))
+                return {
+                    "action": "RAISE",
+                    "ev": ev,
+                    "pot_odds": pot_odds,
+                    "equity": equity,
+                    "bet_to_call": bet_to_call,
+                    "pot_size": pot_size,
+                    "recommended_amount": raise_amount,
+                    "reason": "Micro-Aposta (<2% stack) detectada. Hero tem TPTK ou melhor. RAISE POR VALOR E PROTEÇÃO."
+                }
+            elif has_draw or has_pair or has_overcards:
                 return {
                     "action": "CALL",
                     "ev": ev,
@@ -325,10 +325,10 @@ def make_decision(
                     "bet_to_call": bet_to_call,
                     "pot_size": pot_size,
                     "recommended_amount": bet_to_call,
-                    "reason": "Micro-Aposta (<2% do stack) com par, overcards ou projeto (Implied Odds). CALL justificado."
+                    "reason": "Micro-Aposta (<2% stack) com par, overcards ou projeto (Implied Odds). CALL."
                 }
 
-    # 6. Regra Geral 1: Mesa em Check (bet_to_call == 0)
+    # 5. Regra Geral 1: Mesa em Check (bet_to_call == 0)
     if bet_to_call == 0:
         if equity > 55.0 and hero_stack > 0:
             action = "BET"
@@ -345,7 +345,7 @@ def make_decision(
             recommended_amount = 0.0
             reason = f"Aposta a pagar é 0 e Equity moderada ({equity:.1f}% <= 55%). Check gratuito para ver o próximo estágio."
 
-    # 7. Regra Geral 2: Aposta ativa na mesa (bet_to_call > 0)
+    # 6. Regra Geral 2: Aposta ativa na mesa (bet_to_call > 0)
     else:
         if ev < 0 or equity < pot_odds:
             action = "FOLD"
