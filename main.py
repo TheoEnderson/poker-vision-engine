@@ -272,6 +272,7 @@ class PokerAnalyticsApp:
 
             # Motor de Risco e Tomada de Decisão
             decision = make_decision(
+                loose_mode=getattr(args, "loose", False),
                 p_win=p_win,
                 p_lose=p_lose,
                 p_tie=p_tie,

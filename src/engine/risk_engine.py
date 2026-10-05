@@ -89,10 +89,16 @@ def calculate_decision_score(
     score = 0.0
     
     # 1. Equity & Pot Odds (Math Base)
+    # Pré-flop as equidades são comprimidas (mesmo o AA tem "apenas" 80% HU e 50% vs 3).
+    # Então multiplicamos a vantagem de equidade por 2.5 no pre-flop para compensar.
+    eq_adv = (equity - pot_odds)
+    if state == "PRE_FLOP":
+        eq_adv *= 2.5
+
     if equity > pot_odds:
-        score += 30.0 + (equity - pot_odds)  # EV positivo dá base sólida
+        score += 30.0 + eq_adv
     elif pot_odds > 0:
-        score += 30.0 * (equity / pot_odds)  # Proporcional se for EV negativo
+        score += 30.0 * (equity / pot_odds)
         
     # 2. SPR (Stack to Pot Ratio)
     # Se SPR baixo (comprometido), mãos prontas/fortes ganham muito valor. Se SPR alto, joga com cautela.
@@ -107,10 +113,12 @@ def calculate_decision_score(
         if equity < 60.0:
             score -= 15.0
             
-    # 4. Preflop Tier Strength
+    # 4. Preflop Tier Strength (Ajustado para VPIP mais natural em mesas casuais)
     if tier == 1:
-        score += 15.0
+        score += 20.0
     elif tier == 2:
+        score += 12.0
+    elif tier == 3:
         score += 5.0
     elif tier == 4:
         score -= 10.0
@@ -133,7 +141,8 @@ def make_decision(
     hero_cards: Optional[List[str]] = None,
     board_cards: Optional[List[str]] = None,
     outs: int = 0,
-    draw_name: str = "Nenhum"
+    draw_name: str = "Nenhum",
+    loose_mode: bool = False
 ) -> Dict[str, Any]:
     """
     Motor de Risco Multidimensional. Retorna a decisão (FOLD/CHECK/CALL/RAISE/ALL-IN).
@@ -170,7 +179,8 @@ def make_decision(
     decision_score = calculate_decision_score(
         equity=equity, pot_odds=pot_odds, ev=ev, spr=spr, 
         texture=texture, tier=tier, bet_ratio=bet_ratio, 
-        has_pair_or_better=has_pair_or_better
+        has_pair_or_better=has_pair_or_better,
+        state=state
     )
 
     action = "FOLD"
@@ -192,13 +202,14 @@ def make_decision(
                 action = "ALL-IN"
                 recommended_amount = hero_stack
             reason = f"Score dominante ({decision_score:.1f} >= 75). Board analisado. Extraindo valor máximo."
-        elif decision_score >= 45.0:
+        call_threshold = 35.0 if loose_mode else 45.0
+        if decision_score >= call_threshold:
             action = "CALL"
             recommended_amount = bet_to_call
             reason = f"Score moderado/bom ({decision_score:.1f}). SPR atual ({spr:.1f}). CALL justificável matematicamente."
         else:
             action = "FOLD"
-            reason = f"Score baixo ({decision_score:.1f} < 45). Board {'Seco' if texture['dry'] else 'Conectado/Perigoso'}, EV {ev:+.1f}. Descartando mão."
+            reason = f"Score baixo ({decision_score:.1f} < {call_threshold:.0f}). Board {'Seco' if texture['dry'] else 'Conectado/Perigoso'}, EV {ev:+.1f}. Descartando mão."
 
     return {
         "action": action,
