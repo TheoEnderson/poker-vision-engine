@@ -15,20 +15,12 @@ Construído com **zero invasividade** (captura visual pura via buffers de memór
 
 ## Sumário
 - [Principais Funcionalidades](#principais-funcionalidades)
+- [Arquitetura Multi-Site](#arquitetura-multi-site-e-rois-dinâmicas)
 - [Arquitetura do Sistema](#arquitetura-do-sistema)
-  - [1. Pipeline de Visão Computacional (CV)](#1-pipeline-de-visão-computacional-cv)
-  - [2. Pipeline de Reconhecimento Óptico de Caracteres (OCR)](#2-pipeline-de-reconhecimento-óptico-de-caracteres-ocr)
-  - [3. Máquina de Estados Finitos (FSM)](#3-máquina-de-estados-finitos-fsm)
-  - [4. Motor de Teoria dos Jogos e Análise de Risco](#4-motor-de-teoria-dos-jogos-e-análise-de-risco)
 - [Estrutura de Diretórios](#estrutura-de-diretórios)
 - [Guia de Instalação](#guia-de-instalação)
-  - [Linux (Ubuntu / Debian / Arch)](#linux-ubuntu--debian--arch)
-  - [Windows](#windows)
-- [Configuração (.env)](#configuração-env)
+- [Configuração (.env e sites.json)](#configuração-env-e-sitesjson)
 - [Uso e Execução](#uso-e-execução)
-  - [Modo Assistente Autônomo ao Vivo (--live)](#modo-assistente-autônomo-ao-vivo---live)
-  - [Suíte Integrada de Validação Arquitetural](#suíte-integrada-de-validação-arquitetural)
-  - [Execução dos Testes Unitários](#execução-dos-testes-unitários)
 - [Licença](#licença)
 
 ---
@@ -36,13 +28,32 @@ Construído com **zero invasividade** (captura visual pura via buffers de memór
 ## Principais Funcionalidades
 
 - **Template Matching Multi-Escala Normalizado**: Reconhecimento dinâmico de Ranks e Naipes testando variações de escala entre 60% e 150%, tornando o sistema imune a diferentes resoluções de tela e densidades de pixel (DPI).
-- **Filtro Cromático HSV para Naipes**: Separação matemática rigorosa entre naipes vermelhos (`♥`, `♦`) e pretos (`♠`, `♣`), eliminando confusões sob iluminações complexas.
-- **Desempate Morfológico e Topológico**: Análise de contornos para diferenciar glifos semelhantes (ápice afunilado de Espadas vs. lóbulos de Paus; losango agudo de Ouros vs. concavidade de Copas).
-- **OCR com Binarização de Otsu e Filtro de Contorno**: Redimensionamento 2x, remoção de ícones de fichas e ruídos visuais para leitura numérica precisa do pote e stack do Hero.
-- **Iron Lock Estrito (Trava de Ferro)**: Sistema de retenção de cartas que impede que oscilações transitórias de visão computacional percam a mão do Hero durante a rodada.
-- **Ciclo de Vida FSM Estrito**: Garantia de transições sequenciais válidas no Texas Hold'em, impedindo saltos ilegais de fase.
-- **Classificador de Mãos em 4 Tiers e Preservação de Stack**: Avaliação tática pré-flop e filtro de sobrevivência contra apostas pesadas (`is_heavy_bet`), forçando Fold de mãos marginais quando o risco compromete mais de 40% do stack.
-- **Otimização de Cache Zero-CPU**: Desativação inteligente de recálculos de Monte Carlo quando o estado da mesa, pote, aposta e cartas permanecem inalterados.
+- **Filtro Cromático HSV para Naipes**: Separação matemática rigorosa entre naipes vermelhos (`♥`, `♦`) e pretos (`♠`, `♣`), eliminando confusões visuais.
+- **OCR com Binarização de Otsu e Filtro de Contorno**: Leitura numérica precisa do pote e stack do Hero com redimensionamento 2x.
+- **Iron Lock Estrito (Trava de Ferro)**: Sistema de retenção de cartas que impede perdas de informações por oscilações transitórias na visão computacional.
+- **Ciclo de Vida FSM Estrito**: Garantia de transições sequenciais válidas no Texas Hold'em.
+- **Motor Heurístico de Agressividade e Valor (TPTK+)**: Sistema inteligente que recusa Calls "esperançosos", levanta apostas fortes com Top Pair Top Kicker (TPTK) ou Overpairs, e realiza 3-Bet com mãos de Tier 1 no Pré-Flop.
+- **Filtro de Range Pós-Flop**: Corta automaticamente 50% da Equity simulada se o Hero possui apenas High Card sem projetos e sofre uma aposta agressiva.
+- **Arquitetura Multi-Site**: Configuração externalizada de ROIs (`sites.json`) permitindo mapear qualquer site ou aplicativo de Poker (ReplayPoker, CoinPoker, PokerBros, etc) sem mexer no código Python.
+- **Dataset Logger Automático**: Coleta silenciosa de métricas (Pote, Stack, Equity, EV, Ações) na pasta `data/dataset_partidas.csv` para posterior treinamento de Machine Learning.
+
+---
+
+## Arquitetura Multi-Site e ROIs dinâmicas
+
+Com o uso do arquivo `sites.json`, você pode pre-configurar áreas de corte (ROIs) de diversos clientes ou sites de Poker diferentes simultaneamente. O PAE carrega o perfil correto lendo a variável de ambiente `POKER_SITE`.
+
+Exemplo (`sites.json`):
+```json
+{
+  "ReplayPoker": {
+    "POT_ROI": { "top": 210, "left": 850, "width": 220, "height": 60 }
+  },
+  "CoinPoker": {
+    "POT_ROI": { "top": 300, "left": 800, "width": 200, "height": 50 }
+  }
+}
+```
 
 ---
 
@@ -64,7 +75,6 @@ flowchart TD
 
     subgraph Pipeline de OCR
         RAW --> OCR_POT[Extração do Pote + Filtro de Sanidade]
-        RAW --> OCR_BTN[Detecção de Botões de Ação - Fold/Check/Call]
         RAW --> OCR_STACK[Leitor Dinâmico de Stack do Hero]
     end
 
@@ -80,43 +90,12 @@ flowchart TD
         MC --> EV[Cálculo de EV e Pot Odds]
         TIER --> EV
         OCR_POT --> EV
-        OCR_BTN --> EV
         OCR_STACK --> EV
-        EV --> HEAVY{Aposta > 40% do Stack?}
-        HEAVY -- Sim --> SURVIVAL[Modo de Preservação: Tier 1 ou Dois Pares+]
-        HEAVY -- Não --> ACTION[Decisão Ótima: FOLD / CHECK / CALL / RAISE / ALL-IN]
+        EV --> HEUR[Heurísticas Avançadas: TPTK, Overpairs, Filtro de Range]
+        HEUR --> ACTION[Decisão Ótima: FOLD / CHECK / CALL / RAISE / ALL-IN]
+        ACTION --> LOG[Dataset Logger Automático]
     end
 ```
-
-### 1. Pipeline de Visão Computacional (CV)
-- **Ingestão Nativa**: Captura direta via memória compartilhada (`/dev/shm`) usando `grim` no Wayland, ou leitura de alto desempenho via `mss` em ambientes X11 e Windows.
-- **Localização Dinâmica de Cartas**: Oculta a área do board com máscara de exclusão e localiza clusters brancos (saturação HSV < 55 e brilho > 175) para segmentar a mão do Hero em qualquer assento da mesa.
-- **Casamento de Glifos**: Utiliza correlação cruzada normalizada (`cv2.TM_CCOEFF_NORMED`) em 25 etapas de escala entre 0.6x e 1.5x.
-
-### 2. Pipeline de Reconhecimento Óptico de Caracteres (OCR)
-- **Extração de Pote e Stack**: Configuração estrita do Tesseract (`--psm 6 / --psm 7 -c tessedit_char_whitelist=0123456789.,`).
-- **Teto de Sanidade Máxima (`MAX_REALISTIC_POT`)**: Descarta automaticamente leituras anômalas resultantes de concatenações visuais (ex: `93700`) e mantém o último valor seguro validado.
-- **Máscara de Ruído e Ícones**: Remove componentes visuais conectados (como ícones circulares de fichas com `altura > 15` e `largura < 35`) antes da binarização por Otsu.
-
-### 3. Máquina de Estados Finitos (FSM)
-Controla formalmente a evolução sequencial da mão de poker:
-
-$$\mathbf{WAITING\_HAND} \longrightarrow \mathbf{PRE\_FLOP} \longrightarrow \mathbf{FLOP} \longrightarrow \mathbf{TURN} \longrightarrow \mathbf{RIVER} \longrightarrow \mathbf{SHOWDOWN}$$
-
-Transições anômalas (como saltar de `PRE_FLOP` diretamente para o `RIVER` sem cartas no flop e turn) são bloqueadas sumariamente para proteger a integridade dos cálculos.
-
-### 4. Motor de Teoria dos Jogos e Análise de Risco
-
-- **Fórmula de Pot Odds**:
-  $$\text{Pot Odds (\%)} = \left( \frac{\text{Aposta}}{\text{Pote} + \text{Aposta}} \right) \times 100$$
-
-- **Fórmula de Valor Esperado ($EV$)**:
-  $$EV = (P_{\text{vitória}} \times V_{\text{pote}}) - (P_{\text{derrota}} \times V_{\text{aposta}}) + \left(P_{\text{empate}} \times \frac{V_{\text{pote}}}{2}\right)$$
-
-- **Blindagem de Sobrevivência contra All-in / Apostas Pesadas**:
-  Quando a aposta a pagar consome mais de 40% do stack do Hero (`bet_to_call > 0.40 * hero_stack`):
-  - **No Pré-Flop**: Apenas mãos Tier 1 (AA, KK, QQ, JJ, AKs, AKo) têm autorização para pagar/aumentar. Mãos de Tier 2, 3 ou 4 forçam **FOLD** imediato.
-  - **No Pós-Flop**: Exige-se no mínimo Dois Pares, Trinca ou jogo pronto superior para continuar. Mãos marginais (Carta Alta, Par Baixo) são descartadas para preservação do patrimônio.
 
 ---
 
@@ -126,43 +105,29 @@ Transições anômalas (como saltar de `PRE_FLOP` diretamente para o `RIVER` sem
 POKER/
 ├── assets/
 │   ├── cards/                  # Recortes de cartas processadas (slot_1..slot_5)
-│   ├── samples/                # Capturas reais da mesa (mesa_6.png, etc.)
-│   ├── templates/
-│   │   ├── crops/              # Recortes intermediários e máscaras de debug
-│   │   ├── ranks/              # 13 Templates binarizados de Ranks (2..A)
-│   │   └── suits/              # 4 Templates oficiais de Naipes (s, h, d, c)
+│   ├── samples/                # Capturas reais da mesa para validação
+│   ├── templates/              # Templates binarizados de Ranks (2..A) e Naipes (s,h,d,c)
 │   └── unknown_cards/          # Salvamento automático de cartas não catalogadas
+├── data/
+│   └── dataset_partidas.csv    # Histórico de jogadas gerado via Logger para IA (git-ignored)
+├── docs/
+│   └── Documento_Arquitetura_PokerAnalytics.pdf  # Design extendido do sistema
+├── scripts/
+│   ├── gerar_avatar.py         # Utilitário para gerar avatares e assets secundários
+│   └── measure_cards.py        # Ferramenta para medir coordenadas durante a calibração
 ├── src/
-│   ├── __init__.py             # Exportador raiz do pacote
-│   ├── config.py               # Configuração centralizada e leitor de variáveis (.env)
-│   ├── vision/                 # Subpacote de Visão Computacional
-│   │   ├── __init__.py
-│   │   ├── detector.py         # Detecção do Board, Hero e contagem de oponentes
-│   │   ├── vision.py           # Captura nativa de tela (Wayland/X11/Windows)
-│   │   ├── recognizer.py       # Validação de cartas e corte de cantos
-│   │   ├── cards.py            # Fatiamento da grade de cartas do board
-│   │   ├── match_contours.py   # Utilitário de correspondência por contornos
-│   │   ├── match_small.py      # Utilitário de casamento de micro-glifos
-│   │   ├── build_templates.py  # Construtor de templates binarizados
-│   │   └── catalog_cards.py    # Catalogador de cartas desconhecidas com hash MD5
-│   ├── ocr/                    # Subpacote de Reconhecimento de Caracteres
-│   │   ├── __init__.py
-│   │   └── ocr_reader.py       # Extração de Pote, Stack e botões de ação via Tesseract
-│   └── engine/                 # Subpacote de Regras, Probabilidades e Decisão
-│       ├── __init__.py
-│       ├── state_machine.py    # Máquina de Estados Finitos (HandState)
-│       ├── risk_engine.py      # Motor de EV, Pot Odds e tomada de decisão tática
-│       ├── evaluator.py        # Avaliador de 7 cartas e simulação Monte Carlo
-│       └── preflop_tier.py     # Classificador heurístico em 4 Tiers
-├── tests/                      # Suíte de Testes Automatizados
-│   ├── __init__.py
-│   └── test_preflop_and_ocr.py # Testes de sanidade de OCR e sobrevivência de stack
-├── config.py                   # Shim para importação direta na raiz
-├── main.py                     # Ponto de entrada principal e assistente ao vivo
-├── test_preflop_and_ocr.py     # Runner raiz da suíte de testes
-├── requirements.txt            # Dependências essenciais do ecossistema Python
-├── .env.example                # Arquivo modelo de configuração de ambiente
-└── README.md                   # Documentação técnica de arquitetura
+│   ├── config.py               # Configuração global, lendo de sites.json e .env
+│   ├── dataset_logger.py       # Gravação em tempo real no CSV de dados da mesa
+│   ├── vision/                 # Pipeline visual (Template Matching, detecção, máscara)
+│   ├── ocr/                    # OCR do pote e stack (Tesseract)
+│   └── engine/                 # Risco, Máquina de Estados (FSM) e Heurísticas
+├── tests/                      # Suíte de Testes
+│   ├── debug_archive/          # Scripts isolados de debug para uso livre
+│   └── test_preflop_and_ocr.py # Testes de sanidade de OCR
+├── sites.json                  # Perfis de ROIs da mesa suportando multi-clientes (ReplayPoker, etc)
+├── main.py                     # Ponto de entrada (Assistente ao vivo `--live`)
+├── requirements.txt            # Dependências Python
+└── .env.example                # Variáveis de ambiente configuráveis
 ```
 
 ---
@@ -192,7 +157,7 @@ POKER/
 
 ### Windows
 
-1. **Instalar Python 3.10+** através do [python.org](https://www.python.org/downloads/). Marque a opção **Add Python to PATH**.
+1. **Instalar Python 3.10+** (Marque **Add Python to PATH** na instalação).
 2. **Instalar Tesseract OCR**:
    - Baixe o instalador oficial em [UB-Mannheim/tesseract/wiki](https://github.com/UB-Mannheim/tesseract/wiki).
    - Adicione `C:\Program Files\Tesseract-OCR` às Variáveis de Ambiente do Sistema (`PATH`).
@@ -206,51 +171,38 @@ POKER/
 
 ---
 
-## Configuração (.env)
+## Configuração (.env e sites.json)
 
-Copie o arquivo de exemplo para criar a sua configuração personalizada:
+A arquitetura usa dois níveis de configuração. O layout de ROIs está no arquivo `sites.json`, mas credenciais de sistema ou parâmetros gerais dinâmicos devem ir no `.env`.
 
+Copie o modelo padrão:
 ```bash
 cp .env.example .env
 ```
 
-| Parâmetro | Padrão | Descrição |
+| Parâmetro de Ambiente | Padrão | Descrição |
 | :--- | :--- | :--- |
-| `HERO_IDENTIFIER` | `The_Ment_End` | Nome/Nick do jogador para ancoragem do OCR do stack |
-| `POT_ROI_TOP` / `LEFT` | `210`, `850` | Coordenadas superiores da ROI do Pote na mesa |
-| `RANK_THRESHOLD` | `0.68` | Limiar mínimo de correlação para Ranks |
-| `SUIT_THRESHOLD` | `0.68` | Limiar mínimo de correlação para Naipes |
-| `MAX_REALISTIC_POT` | `10000.0` | Teto de sanidade para descartar erros de OCR no pote |
-| `HEAVY_BET_STACK_RATIO` | `0.40` | Proporção de stack que ativa o modo de preservação |
-| `POLL_INTERVAL` | `0.5` | Intervalo de verificação da tela em segundos |
+| `POKER_SITE` | `ReplayPoker` | Nome da configuração no `sites.json` a ser mapeada. |
+| `HERO_IDENTIFIER` | `The_Ment_End` | Nome do jogador para ancoragem do OCR visual. |
+| `FORCE_X11_MSS` | `False` | Força a captura via X11 MSS (útil caso Wayland falhe). |
+| `POLL_INTERVAL` | `0.5` | Segundos entre cada quadro analisado da mesa. |
+| `HEAVY_BET_STACK_RATIO`| `0.40` | Limite (40%) de stack aceitável antes de ativar Folds defensivos. |
 
 ---
 
 ## Uso e Execução
 
 ### Modo Assistente Autônomo ao Vivo (--live)
-Monitora a tela continuamente, detecta a vez do Hero, processa as cartas/pote/stack e renderiza as decisões ótimas no terminal:
+Acompanha a tela em tempo real com overlay do terminal atualizando probabilidades, EV, Equity, filtragens de range e heurística, decidindo de imediato a sua jogada ótima:
 
 ```bash
 ./venv/bin/python main.py --live
 ```
-*Ajuste opcional de taxa de amostragem*: `./venv/bin/python main.py --live --poll 0.3`
-
-### Suíte Integrada de Validação Arquitetural
-Executa a validação ponta a ponta através dos 8 estágios sequenciais do Texas Hold'em:
-
-```bash
-./venv/bin/python main.py
-```
+*(Para mudar o site, adicione a variável: `POKER_SITE=CoinPoker ./venv/bin/python main.py --live`)*
 
 ### Execução dos Testes Unitários
-Executa a suíte de testes cobrindo os filtros de sanidade de OCR e as decisões de sobrevivência de stack:
-
+Valida integridade do OCR e detecção de ranges lógicos:
 ```bash
-# Execução via runner raiz
-./venv/bin/python test_preflop_and_ocr.py
-
-# Ou via descoberta nativa do unittest
 ./venv/bin/python -m unittest discover -s tests
 ```
 
