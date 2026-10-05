@@ -23,6 +23,8 @@ RANK_VALUES: Dict[str, int] = {
     "T": 10, "10": 10, "J": 11, "Q": 12, "K": 13, "A": 14
 }
 
+from src.engine.range_model import get_opponent_range
+
 VALUE_TO_RANK: Dict[int, str] = {v: r for r, v in RANK_VALUES.items() if r != "T"}
 VALUE_TO_RANK[10] = "10"
 
@@ -159,7 +161,8 @@ def calculate_equity(
     hero_cards: List[str],
     board_cards: List[str],
     num_opponents: int = 4,
-    iterations: int = 10000
+    iterations: int = 10000,
+    opp_range_percent: float = 1.0
 ) -> Tuple[float, float, float, float, Tuple[int, ...]]:
     """
     Calcula a probabilidade de Vitória, Empate e Derrota via Simulação de Monte Carlo.
@@ -182,28 +185,54 @@ def calculate_equity(
     losses = 0
     t_start = time.time()
 
-    total_cards_needed = cards_needed_board + (num_opponents * 2)
+    opp_combos = []
+    if opp_range_percent < 1.0:
+        opp_combos = get_opponent_range(FULL_DECK, dead_cards, opp_range_percent)
 
     for _ in range(iterations):
-        drawn = random.sample(available_deck, total_cards_needed)
-        sim_board = valid_board + drawn[:cards_needed_board]
+        drawn_board = random.sample(available_deck, cards_needed_board)
+        sim_board = valid_board + drawn_board
 
         hero_score = evaluate_7_cards(valid_hero + sim_board)
 
         hero_tied = False
         hero_lost = False
 
-        idx_offset = cards_needed_board
-        for _ in range(num_opponents):
-            opp_cards = drawn[idx_offset : idx_offset + 2]
-            idx_offset += 2
-            opp_score = evaluate_7_cards(opp_cards + sim_board)
+        if opp_combos:
+            used_cards = set(drawn_board)
+            for _ in range(num_opponents):
+                for _ in range(10): # retry limit
+                    opp_cards = random.choice(opp_combos)
+                    if opp_cards[0] not in used_cards and opp_cards[1] not in used_cards:
+                        used_cards.add(opp_cards[0])
+                        used_cards.add(opp_cards[1])
+                        break
+                else:
+                    avail_opp = [c for c in available_deck if c not in used_cards]
+                    opp_cards = tuple(random.sample(avail_opp, 2))
+                    used_cards.add(opp_cards[0])
+                    used_cards.add(opp_cards[1])
 
-            if opp_score > hero_score:
-                hero_lost = True
-                break
-            elif opp_score == hero_score:
-                hero_tied = True
+                opp_score = evaluate_7_cards(list(opp_cards) + sim_board)
+                if opp_score > hero_score:
+                    hero_lost = True
+                    break
+                elif opp_score == hero_score:
+                    hero_tied = True
+        else:
+            avail_opp = [c for c in available_deck if c not in drawn_board]
+            drawn_opps = random.sample(avail_opp, num_opponents * 2)
+            idx_offset = 0
+            for _ in range(num_opponents):
+                opp_cards = drawn_opps[idx_offset : idx_offset + 2]
+                idx_offset += 2
+                opp_score = evaluate_7_cards(opp_cards + sim_board)
+
+                if opp_score > hero_score:
+                    hero_lost = True
+                    break
+                elif opp_score == hero_score:
+                    hero_tied = True
 
         if hero_lost:
             losses += 1

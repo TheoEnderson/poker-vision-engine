@@ -260,12 +260,22 @@ class PokerAnalyticsApp:
                 hero_eval = evaluate_7_cards(self.hero_cards + current_board)
                 hero_hand_desc = get_hand_category_name(hero_eval)
 
+            # Issue #1: Oponent Range Heuristic (baseline antes da Issue #2 - Posição)
+            # Se o pote está inflado (> 30 fichas pre-flop), range apertado. Se baixo, mais aberto.
+            if pot_size > 30:
+                opp_range = 0.15 # Top 15% (Tight / Raised pot)
+            elif pot_size > 15:
+                opp_range = 0.30 # Top 30% (Standard open)
+            else:
+                opp_range = 0.50 # Top 50% (Limped / Passivo)
+
             # Simulação de Monte Carlo para cálculo de Equity
             p_win, p_tie, p_lose, equity, elapsed = calculate_equity(
                 hero_cards=self.hero_cards,
                 board_cards=current_board,
                 num_opponents=self.num_opponents,
-                iterations=self.iterations
+                iterations=self.iterations,
+                opp_range_percent=opp_range
             )
 
             outs, draw_name = detect_draws(self.hero_cards, current_board)
@@ -296,6 +306,7 @@ class PokerAnalyticsApp:
                 "hero_stack": self.hero_stack,
                 "pot_odds": decision["pot_odds"],
                 "equity": decision["equity"],
+                "opp_range_percent": opp_range,
                 "p_win": p_win,
                 "p_tie": p_tie,
                 "p_lose": p_lose,
@@ -395,7 +406,8 @@ class PokerAnalyticsApp:
             f"• Pot Odds Exigidas:     {a['pot_odds']:8.2f}%"
         )
         print(f"╠{sep_double}╣")
-        print(f"║ {C_BOLD}PROBABILIDADES (MONTE CARLO - {self.iterations:,} iterações):{C_RESET}")
+        range_str = "100% Aleatório" if a.get('opp_range_percent', 1.0) == 1.0 else f"Top {int(a.get('opp_range_percent', 1.0)*100)}% Range"
+        print(f"║ {C_BOLD}PROBABILIDADES (MONTE CARLO - {self.iterations:,} iterações vs {range_str}):{C_RESET}")
         print(
             f"║   • Taxa de Vitória (P_win): {a['p_win']:6.2f}%  │ "
             f"• Equity Consolidada:  {a['equity']:8.2f}%"
