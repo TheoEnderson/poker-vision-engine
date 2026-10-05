@@ -436,11 +436,11 @@ class PokerAnalyticsApp:
             f"• Pot Odds Exigidas:     {a['pot_odds']:8.2f}%"
         )
         print(f"╠{sep_double}╣")
-        opp_ranges = a.get('opp_range_percent', 1.0)
-        if isinstance(opp_ranges, list):
-            range_str = " | ".join([f"{int(r*100)}%" if r < 1.0 else "100%" for r in opp_ranges]) + " Ranges"
+        opp_ranges_val = a.get('opp_range_percent', 1.0)
+        if isinstance(opp_ranges_val, list):
+            range_str = " | ".join([f"{int(r*100)}%" if r < 1.0 else "100%" for r in opp_ranges_val]) + " Ranges"
         else:
-            range_str = "100% Aleatório" if opp_ranges == 1.0 else f"Top {int(opp_ranges*100)}% Range"
+            range_str = "100% Aleatório" if opp_ranges_val == 1.0 else f"Top {int(opp_ranges_val*100)}% Range"
         print(f"║ {C_BOLD}PROBABILIDADES (MONTE CARLO - {self.iterations:,} iterações vs {range_str}):{C_RESET}")
         print(
             f"║   • Taxa de Vitória (P_win): {a['p_win']:6.2f}%  │ "
