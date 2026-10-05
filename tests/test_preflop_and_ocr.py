@@ -46,7 +46,7 @@ class TestPreflopAndOCR(unittest.TestCase):
             outs=0
         )
         self.assertEqual(decision["action"], "FOLD", "Deveria forçar FOLD com lixo pré-flop sob aposta pesada.")
-        self.assertIn("Preservação de patrimônio", decision["reason"])
+        self.assertIn("Descartando mão", decision["reason"])
 
     def test_heavy_bet_postflop_high_card(self):
         """Garante FOLD imediato com carta alta pós-flop sob aposta que compromete o stack."""
@@ -61,7 +61,7 @@ class TestPreflopAndOCR(unittest.TestCase):
             outs=0
         )
         self.assertEqual(decision["action"], "FOLD", "Deveria forçar FOLD com Carta Alta no pós-flop sob aposta pesada.")
-        self.assertIn("Preservação de patrimônio", decision["reason"])
+        self.assertIn("Descartando mão", decision["reason"])
 
 
 if __name__ == '__main__':
