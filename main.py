@@ -196,8 +196,6 @@ class PokerAnalyticsApp:
             or len(self.hero_cards) < 2
             or any(c.lower() in ("desconhecida", "vazio", "none", "--") for c in self.hero_cards)
         )
-        if hero_is_missing:
-            has_changed = True
 
         if not has_changed and self.last_analysis is not None:
             if show_dashboard:
@@ -493,10 +491,10 @@ def run_live(poll_interval: float = POLL_INTERVAL):
 
             # QUEBRA DE LOCK POR AUSÊNCIA (A Prova de Balas):
             # Quando você folda (ou a mão acaba), as cartas somem da mesa. 
-            # Se não encontrarmos a caixinha branca das cartas por 2 frames (1.0s), quebramos a trava.
+            # Se não encontrarmos a caixinha branca das cartas por 8 frames (4.0s), quebramos a trava.
             if len(hero_detected) == 0:
                 app.hero_absence_frames = getattr(app, 'hero_absence_frames', 0) + 1
-                if app.hero_absence_frames >= 2:
+                if app.hero_absence_frames >= 8:
                     if getattr(app, 'hero_cards', []) != []:
                         print("[INFO] Cartas do Hero sumiram da tela. Mão encerrada ou foldada. Limpando a trava.")
                         app.hero_cards = []

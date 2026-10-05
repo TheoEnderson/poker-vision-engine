@@ -75,7 +75,7 @@ class PokerHandStateMachine:
         if from_state == HandState.WAITING_HAND and to_state == HandState.PRE_FLOP:
             return num_cards == 0
 
-        if from_state in (HandState.PRE_FLOP, HandState.WAITING_HAND) and to_state == HandState.FLOP:
+        if from_state == HandState.PRE_FLOP and to_state == HandState.FLOP:
             return num_cards == 3
 
         if from_state == HandState.FLOP and to_state == HandState.TURN:
@@ -112,11 +112,14 @@ class PokerHandStateMachine:
             return True
 
         if not self._is_transition_allowed(self.current_state, target_state, num_cards):
-            print(
-                f"[ERRO DE TRANSIÇÃO ILEGAL] Tentativa proibida: "
-                f"Estado atual: {self.current_state.value} -> Destino: {target_state.value} | "
-                f"Cartas recebidas ({num_cards}): {valid_cards}"
-            )
+            if self.current_state == HandState.WAITING_HAND and target_state in (HandState.FLOP, HandState.TURN, HandState.RIVER):
+                pass # Bot está apenas aguardando a mão atual (onde ele foldou) terminar na tela
+            else:
+                print(
+                    f"[ERRO DE TRANSIÇÃO ILEGAL] Tentativa proibida: "
+                    f"Estado atual: {self.current_state.value} -> Destino: {target_state.value} | "
+                    f"Cartas recebidas ({num_cards}): {valid_cards}"
+                )
             return False
 
         previous_state = self.current_state
