@@ -5,6 +5,7 @@ Módulo de Reconhecimento Óptico de Caracteres (OCR) para extração de Pote, S
 
 import os
 import re
+import math
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 import cv2
@@ -379,3 +380,102 @@ if __name__ == "__main__":
     assert turn_info_6["is_hero_turn"] is False
     assert turn_info_6["action_type"] == "WAITING"
     print("[SUCESSO] Estado WAITING detectado corretamente em mesa_6.png!\n")
+
+def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], verbose: bool = False) -> str:
+    """
+    Identifica a posição do Hero na mesa (BTN, SB, BB, UTG, MP, CO)
+    baseado na posição do botão de Dealer (D) e do nome do Hero.
+    Assume uma mesa 6-max (layout padrão).
+    """
+    img = _resolve_image_input(image_path_or_frame)
+    if img is None:
+        return "Desconhecida"
+
+    h, w = img.shape[:2]
+    cx, cy = w // 2, h // 2
+
+    # 1. Encontrar o Botão de Dealer
+    template_path = PROJECT_ROOT / "assets" / "templates" / "dealer_button.png"
+    if not template_path.exists():
+        if verbose:
+            print("[AVISO OCR] Template do botão de Dealer não encontrado.")
+        return "Desconhecida"
+
+    template = cv2.imread(str(template_path))
+    res = cv2.matchTemplate(img, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+
+    dealer_angle = 0.0
+    if max_val > 0.6:
+        dealer_x = max_loc[0] + template.shape[1] // 2
+        dealer_y = max_loc[1] + template.shape[0] // 2
+        dealer_angle = math.degrees(math.atan2(dealer_y - cy, dealer_x - cx))
+    else:
+        if verbose:
+            print("[AVISO OCR] Botão de Dealer não detectado na tela.")
+        return "Desconhecida"
+
+    # 2. Encontrar o Hero (Nome)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    # Utilizar a coordenada do cache se existir
+    global last_hero_name_coords
+    hero_angle = 0.0
+    found_hero = False
+    
+    if last_hero_name_coords is not None:
+        hx, hy, hw, hh = last_hero_name_coords
+        center_hx, center_hy = hx + hw // 2, hy + hh // 2
+        hero_angle = math.degrees(math.atan2(center_hy - cy, center_hx - cx))
+        found_hero = True
+    else:
+        # Busca completa (fallback)
+        gray_resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        _, otsu = cv2.threshold(gray_resized, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        data = pytesseract.image_to_data(otsu, output_type=Output.DICT)
+        
+        for i, text in enumerate(data["text"]):
+            if "Ment" in text or "End" in text or HERO_IDENTIFIER in text:
+                hx = data["left"][i] // 2 + data["width"][i] // 4
+                hy = data["top"][i] // 2 + data["height"][i] // 4
+                hero_angle = math.degrees(math.atan2(hy - cy, hx - cx))
+                found_hero = True
+                break
+
+    if not found_hero:
+        if verbose:
+            print("[AVISO OCR] Avatar/Nome do Hero não detectado para cálculo de posição.")
+        return "Desconhecida"
+
+    # 3. Mapear ângulos para a geometria da mesa 6-max
+    ideal_seats_6 = [
+        (0, "Mid Right"),
+        (45, "Bot Right"),
+        (135, "Bot Left"),
+        (180, "Mid Left"),
+        (-135, "Top Left"),
+        (-45, "Top Right")
+    ]
+
+    def snap_to_seat(angle, seats):
+        angle = (angle + 180) % 360 - 180
+        best_seat = 0
+        min_diff = 999
+        for i, (ideal_angle, name) in enumerate(seats):
+            diff = abs((angle - ideal_angle + 180) % 360 - 180)
+            if diff < min_diff:
+                min_diff = diff
+                best_seat = i
+        return best_seat
+
+    dealer_idx = snap_to_seat(dealer_angle, ideal_seats_6)
+    hero_idx = snap_to_seat(hero_angle, ideal_seats_6)
+
+    positions_6max = ["BTN", "SB", "BB", "UTG", "MP", "CO"]
+    dist = (hero_idx - dealer_idx) % 6
+    position = positions_6max[dist]
+    
+    if verbose:
+        print(f"[OCR] Dealer={dealer_angle:.1f}° (idx {dealer_idx}), Hero={hero_angle:.1f}° (idx {hero_idx}) -> Posição: {position}")
+
+    return position
