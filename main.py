@@ -70,7 +70,9 @@ class PokerAnalyticsApp:
         auto_detect_turn: bool = True
     ):
         self.state_machine = PokerHandStateMachine(allow_initial_sync=allow_initial_sync)
-        self.dataset_logger = DatasetLogger(str(PROJECT_ROOT / "dataset_partidas.csv"))
+        data_dir = PROJECT_ROOT / "data"
+        data_dir.mkdir(exist_ok=True)
+        self.dataset_logger = DatasetLogger(str(data_dir / "dataset_partidas.csv"))
         self.hero_cards = list(hero_cards) if hero_cards is not None else []
         self.hero_stack = hero_stack
         self.num_opponents = num_opponents
