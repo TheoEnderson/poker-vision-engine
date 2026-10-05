@@ -23,7 +23,8 @@ def calculate_pot_odds(bet_to_call: float, pot_size: float) -> float:
     return (bet_to_call / (pot_size + bet_to_call)) * 100.0 if (pot_size + bet_to_call) > 0 else 0.0
 
 def calculate_ev(p_win: float, p_lose: float, p_tie: float, pot_size: float, bet_to_call: float) -> float:
-    return (p_win * pot_size) - (p_lose * bet_to_call) + (p_tie * (pot_size / 2.0))
+    # Probabilidades vêm como porcentagem (0-100), dividimos por 100 para a fórmula do EV
+    return ((p_win / 100.0) * pot_size) - ((p_lose / 100.0) * bet_to_call) + ((p_tie / 100.0) * (pot_size / 2.0))
 
 
 
@@ -139,7 +140,7 @@ def make_decision(
     """
     equity = p_win + (p_tie / 2.0)
     pot_odds = (bet_to_call / (pot_size + bet_to_call)) * 100.0 if (pot_size + bet_to_call) > 0 else 0.0
-    ev = (p_win * pot_size) - (p_lose * bet_to_call) + (p_tie * (pot_size / 2.0))
+    ev = ((p_win / 100.0) * pot_size) - ((p_lose / 100.0) * bet_to_call) + ((p_tie / 100.0) * (pot_size / 2.0))
     
     # Camada 1: Matemática (SPR)
     spr = hero_stack / pot_size if pot_size > 0 else 10.0

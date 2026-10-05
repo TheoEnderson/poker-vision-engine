@@ -290,8 +290,11 @@ def extract_hero_stack(
         name_roi = gray[max(0, hy - 10) : hy + hh + 10, max(0, hx - 10) : hx + hw + 10]
         text = pytesseract.image_to_string(name_roi, config="--psm 7")
         if any(part in text for part in ["Ment", "End", "The", identifier]):
-            stack_roi = gray[hy + hh : hy + hh + 25, hx : hx + hw]
-            text_stack = process_roi(stack_roi)
+            stack_roi = gray[hy + hh : hy + hh + 25, max(0, hx - 10) : hx + hw + 10]
+            if stack_roi.size > 0:
+                text_stack = process_roi(stack_roi)
+            else:
+                text_stack = "" 
             numbers = re.findall(r"\d+(?:[.,]\d+)*", text_stack.strip())
             if numbers:
                 raw = numbers[-1].replace(",", "").replace(".", "")
@@ -304,7 +307,10 @@ def extract_hero_stack(
                     pass
 
     # 2. Fallback: Busca na tela inteira
-    data = pytesseract.image_to_data(gray, output_type=Output.DICT)
+    # Aumentar a resolução ajuda a ler nomes em resoluções menores
+    gray_resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    _, otsu = cv2.threshold(gray_resized, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    data = pytesseract.image_to_data(otsu, output_type=Output.DICT)
     name_idx = -1
     for i, text in enumerate(data["text"]):
         if any(part in text for part in ["Ment", "End", "The", identifier]):
@@ -314,13 +320,19 @@ def extract_hero_stack(
     if name_idx == -1:
         return last_stack
 
-    left = data["left"][name_idx]
-    top = data["top"][name_idx]
-    width = data["width"][name_idx]
-    height = data["height"][name_idx]
+    # Coordenadas da imagem dobrada
+    left_res = data["left"][name_idx]
+    top_res = data["top"][name_idx]
+    width_res = data["width"][name_idx]
+    height_res = data["height"][name_idx]
+    
+    # Reverte para as originais
+    left, top, width, height = left_res // 2, top_res // 2, width_res // 2, height_res // 2
     last_hero_name_coords = (left, top, width, height)
 
-    stack_roi = gray[top + height : top + height + 25, left : left + width]
+    stack_roi = gray[top + height : top + height + 25, max(0, left - 10) : left + width + 10]
+    if stack_roi.size == 0:
+        return last_stack
     text_stack = process_roi(stack_roi)
 
     clean = text_stack.strip()
