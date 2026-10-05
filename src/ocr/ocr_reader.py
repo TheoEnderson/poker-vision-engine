@@ -279,9 +279,10 @@ def extract_hero_stack(
         mask = np.zeros_like(otsu)
         for c in cnts:
             x, y, w, h = cv2.boundingRect(c)
-            if h > 15 and w < 35:
-                cv2.rectangle(mask, (x - 2, y - 2), (x + w + 2, y + h + 2), 255, -1)
+            if h > 15 and w < 50:
+                cv2.rectangle(mask, (max(0, x - 2), max(0, y - 2)), (x + w + 2, y + h + 2), 255, -1)
         otsu = cv2.bitwise_or(otsu, 255 - mask)
+        cv2.imwrite("debug_otsu_real.png", otsu)
         return pytesseract.image_to_string(otsu, config=f"--psm 7 -c tessedit_char_whitelist={OCR_WHITELIST_DIGITS}")
 
     # 1. Tenta usar o cache da última coordenada conhecida
@@ -290,7 +291,7 @@ def extract_hero_stack(
         name_roi = gray[max(0, hy - 10) : hy + hh + 10, max(0, hx - 10) : hx + hw + 10]
         text = pytesseract.image_to_string(name_roi, config="--psm 7")
         if any(part in text for part in ["Ment", "End", "The", identifier]):
-            stack_roi = gray[hy + hh : hy + hh + 25, max(0, hx - 10) : hx + hw + 10]
+            stack_roi = gray[hy + hh : hy + hh + 25, max(0, hx - 150) : min(gray.shape[1], hx + hw + 150)]
             if stack_roi.size > 0:
                 text_stack = process_roi(stack_roi)
             else:
@@ -330,7 +331,7 @@ def extract_hero_stack(
     left, top, width, height = left_res // 2, top_res // 2, width_res // 2, height_res // 2
     last_hero_name_coords = (left, top, width, height)
 
-    stack_roi = gray[top + height : top + height + 25, max(0, left - 10) : left + width + 10]
+    stack_roi = gray[top + height : top + height + 25, max(0, left - 150) : min(gray.shape[1], left + width + 150)]
     if stack_roi.size == 0:
         return last_stack
     text_stack = process_roi(stack_roi)
