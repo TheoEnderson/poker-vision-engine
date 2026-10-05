@@ -188,7 +188,20 @@ def make_decision(
     else:
         if ev < 0:
             margin = pot_odds - equity
-            if margin <= 3.5:
+            
+            # Issue #3: Implied Odds Tolerance (Pre-flop)
+            # Permite pagar apostas baixas no pré-flop com mãos de potencial (Ax suited, pares) mesmo se o EV for negativo
+            implied_odds_tolerance = 3.5
+            is_cheap_call = bet_to_call <= (hero_stack * 0.05)
+            
+            if is_cheap_call and decision_score >= 60.0:  # Mãos tier 1-3 (inclui Ax suited, pares, conectores)
+                implied_odds_tolerance = 15.0  # Tolera até 15% de desvantagem matemática por causa do potencial
+            
+            if margin <= implied_odds_tolerance and is_cheap_call and decision_score >= 60.0:
+                action = "CALL"
+                recommended_amount = bet_to_call
+                reason = f"Borderline negativo ({ev:+.1f}), mas CALL por Implied Odds pré-flop (Aposta baixa)."
+            elif margin <= 3.5:
                 action = "FOLD"
                 reason = f"EV levemente negativo ({ev:+.1f}). Decisão marginal / Borderline FOLD."
             else:
