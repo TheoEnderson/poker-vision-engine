@@ -80,7 +80,8 @@ def calculate_decision_score(
     texture: Dict[str, bool],
     tier: int,
     bet_ratio: float,
-    has_pair_or_better: bool
+    has_pair_or_better: bool,
+    state: str = "PRE_FLOP"
 ) -> float:
     """
     Camada 2 - Estratégia: Calcula um Score de Decisão Multidimensional (0 a 100+).
