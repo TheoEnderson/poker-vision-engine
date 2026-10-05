@@ -198,7 +198,7 @@ class PokerAnalyticsApp:
         )
 
         if not has_changed and self.last_analysis is not None:
-            if show_dashboard:
+            if show_dashboard and current_state != HandState.WAITING_HAND:
                 self.render_dashboard(self.last_analysis, cached=True)
             return self.last_analysis
 
@@ -240,7 +240,7 @@ class PokerAnalyticsApp:
                 "recalculated": False,
             }
             self.last_analysis = analysis
-            if show_dashboard:
+            if show_dashboard and current_state != HandState.WAITING_HAND:
                 self.render_dashboard(analysis, cached=False)
             return analysis
 
