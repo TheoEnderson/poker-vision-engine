@@ -166,17 +166,7 @@ def make_decision(
         if score_cards[0] >= 1: # Pelo menos um par
             has_pair_or_better = True
             
-    # Premium Pre-flop bypass
-    if state == "PRE_FLOP" and tier == 1:
-        if bet_to_call > 0 and bet_ratio < 0.25:
-            return {
-                "action": "RAISE", "ev": ev, "pot_odds": pot_odds, "equity": equity,
-                "bet_to_call": bet_to_call, "pot_size": pot_size, 
-                "recommended_amount": min(hero_stack, round(bet_to_call * 3.0, 1)),
-                "reason": "Mão Premium (Tier 1). RAISE/3-BET obrigatório para extrair valor."
-            }
-
-    # Camada 2: Cálculo do Score Multidimensional
+    # Camada 2: Cálculo do Score Multidimensional (Confiança/Estratégia)
     decision_score = calculate_decision_score(
         equity=equity, pot_odds=pot_odds, ev=ev, spr=spr, 
         texture=texture, tier=tier, bet_ratio=bet_ratio, 
@@ -191,31 +181,31 @@ def make_decision(
         if decision_score >= 60.0:
             action = "BET"
             recommended_amount = max(1.0, round(pot_size * 0.5, 1))
-            reason = f"Mesa em check, EV positivo. Aposta por valor. (Score {decision_score:.1f})"
+            reason = f"Mesa em check. Aposta por valor (Score de Confiança {decision_score:.1f})."
         else:
             action = "CHECK"
-            reason = f"Mesa em check. Controle de pote e SPR. (Score {decision_score:.1f})"
+            reason = f"Mesa em check. Controle de pote e SPR (Score de Confiança {decision_score:.1f})."
     else:
         if ev < 0:
             action = "FOLD"
             reason = f"EV matemático negativo ({ev:+.1f}). Matemática não justifica o Call."
         else:
-            if decision_score >= 75.0:
+            call_threshold = 35.0 if loose_mode else 45.0
+            
+            if decision_score < call_threshold:
+                action = "FOLD"
+                reason = f"EV bruto marginal ({ev:+.1f}), porém FOLD estratégico (Baixa Confiança: {decision_score:.1f})."
+            elif decision_score >= 75.0:
                 action = "RAISE"
                 recommended_amount = min(hero_stack, round(bet_to_call * 2.5, 1))
                 if hero_stack <= recommended_amount * 1.5:
                     action = "ALL-IN"
                     recommended_amount = hero_stack
-                reason = f"EV fortemente positivo ({ev:+.1f}). Raise para extrair valor máximo/proteção."
+                reason = f"EV positivo ({ev:+.1f}). Raise para extrair valor/proteção (Confiança: {decision_score:.1f})."
             else:
-                call_threshold = 35.0 if loose_mode else 45.0
-                if decision_score >= call_threshold:
-                    action = "CALL"
-                    recommended_amount = bet_to_call
-                    reason = f"EV positivo ({ev:+.1f}). Call estratégico justificado pelo contexto (SPR/Textura)."
-                else:
-                    action = "FOLD"
-                    reason = f"EV bruto positivo ({ev:+.1f}), porém FOLD estratégico: contexto (força, SPR) marginal."
+                action = "CALL"
+                recommended_amount = bet_to_call
+                reason = f"EV positivo ({ev:+.1f}). Call estratégico justificado (Confiança: {decision_score:.1f})."
 
     return {
         "action": action,
