@@ -463,13 +463,14 @@ def run_live(poll_interval: float = POLL_INTERVAL):
 
             # QUEBRA DE LOCK POR AUSÊNCIA (A Prova de Balas):
             # Quando você folda (ou a mão acaba), as cartas somem da mesa. 
-            # Se não encontrarmos a caixinha branca das cartas por 3 frames (1.5s), quebramos a trava.
+            # Se não encontrarmos a caixinha branca das cartas por 2 frames (1.0s), quebramos a trava.
             if len(hero_detected) == 0:
                 app.hero_absence_frames = getattr(app, 'hero_absence_frames', 0) + 1
-                if app.hero_absence_frames >= 3:
+                if app.hero_absence_frames >= 2:
                     if getattr(app, 'hero_cards', []) != []:
                         print("[INFO] Cartas do Hero sumiram da tela. Mão encerrada ou foldada. Limpando a trava.")
                         app.hero_cards = []
+                        app.state_machine.reset_hand()
             else:
                 app.hero_absence_frames = 0
 
@@ -489,6 +490,20 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                     for c in app.hero_cards
                 )
             )
+            
+            # DETECÇÃO DE MUDANÇA DE CARTAS (Novo Pre-Flop Imediato):
+            if has_valid_detected and already_has_valid_hand and hero_detected != app.hero_cards:
+                if len(app.state_machine.board) == 0:
+                    app.hero_cards_changed_frames = getattr(app, 'hero_cards_changed_frames', 0) + 1
+                    if app.hero_cards_changed_frames >= 2:
+                        print(f"\n[INFO] Cartas do Hero mudaram de {app.hero_cards} para {hero_detected}. Nova rodada detectada!")
+                        app.hero_cards = hero_detected
+                        app.hero_cards_changed_frames = 0
+                        app.state_machine.reset_hand()
+                else:
+                    app.hero_cards_changed_frames = 0
+            else:
+                app.hero_cards_changed_frames = 0
 
             # Iron Lock Estrito: Só atualiza se ainda não tivermos uma mão sólida
             if has_valid_detected and not already_has_valid_hand:
