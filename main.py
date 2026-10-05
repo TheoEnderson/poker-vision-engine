@@ -198,7 +198,7 @@ class PokerAnalyticsApp:
         )
 
         if not has_changed and self.last_analysis is not None:
-            if show_dashboard and current_state != HandState.WAITING_HAND:
+            if show_dashboard:
                 self.render_dashboard(self.last_analysis, cached=True)
             return self.last_analysis
 
@@ -240,7 +240,7 @@ class PokerAnalyticsApp:
                 "recalculated": False,
             }
             self.last_analysis = analysis
-            if show_dashboard and current_state != HandState.WAITING_HAND:
+            if show_dashboard:
                 self.render_dashboard(analysis, cached=False)
             return analysis
 
@@ -263,21 +263,36 @@ class PokerAnalyticsApp:
                 hero_eval = evaluate_7_cards(self.hero_cards + current_board)
                 hero_hand_desc = get_hand_category_name(hero_eval)
 
-            # Issue #2: Range Heuristic baseada em Posição e Ação (Pot Size)
+            # Issue #3: Range Contextual Heuristic (Ação + Múltiplos Oponentes)
             base_range = 0.50
             if getattr(self, "hero_position", "Desconhecida") in ["UTG", "MP"]:
-                base_range -= 0.15  # Ranges mais apertados ao agir cedo
+                base_range -= 0.15
             elif getattr(self, "hero_position", "Desconhecida") in ["CO", "BTN"]:
-                base_range += 0.10  # Oponentes defendem mais solto contra posições finais
+                base_range += 0.10
                 
-            if pot_size > 30:
-                opp_range = base_range - 0.20  # Raised / 3-bet pot
-            elif pot_size > 15:
-                opp_range = base_range - 0.10  # Standard open
+            is_3bet_pot = pot_size >= 150
+            is_raised_pot = pot_size >= 30 or bet_to_call >= 10
+            
+            if is_3bet_pot:
+                aggressor_range = base_range - 0.35
+                caller_range = base_range - 0.15
+            elif is_raised_pot:
+                aggressor_range = base_range - 0.20
+                caller_range = base_range
             else:
-                opp_range = base_range         # Limped pot
+                aggressor_range = base_range - 0.05
+                caller_range = base_range + 0.20
                 
-            opp_range = max(0.05, min(1.0, opp_range))
+            opp_ranges = []
+            if self.num_opponents > 0:
+                if bet_to_call > 0:
+                    opp_ranges.append(max(0.05, min(1.0, aggressor_range)))
+                    for _ in range(1, self.num_opponents):
+                        opp_ranges.append(max(0.05, min(1.0, caller_range)))
+                else:
+                    opp_ranges.append(max(0.05, min(1.0, aggressor_range + 0.10)))
+                    for _ in range(1, self.num_opponents):
+                        opp_ranges.append(max(0.05, min(1.0, caller_range + 0.15)))
 
             # Simulação de Monte Carlo para cálculo de Equity
             p_win, p_tie, p_lose, equity, elapsed = calculate_equity(
@@ -285,7 +300,7 @@ class PokerAnalyticsApp:
                 board_cards=current_board,
                 num_opponents=self.num_opponents,
                 iterations=self.iterations,
-                opp_range_percent=opp_range
+                opp_range_percent=opp_ranges
             )
 
             outs, draw_name = detect_draws(self.hero_cards, current_board)
@@ -316,7 +331,7 @@ class PokerAnalyticsApp:
                 "hero_stack": self.hero_stack,
                 "pot_odds": decision["pot_odds"],
                 "equity": decision["equity"],
-                "opp_range_percent": opp_range,
+                "opp_range_percent": opp_ranges,
                 "p_win": p_win,
                 "p_tie": p_tie,
                 "p_lose": p_lose,
@@ -421,7 +436,11 @@ class PokerAnalyticsApp:
             f"• Pot Odds Exigidas:     {a['pot_odds']:8.2f}%"
         )
         print(f"╠{sep_double}╣")
-        range_str = "100% Aleatório" if a.get('opp_range_percent', 1.0) == 1.0 else f"Top {int(a.get('opp_range_percent', 1.0)*100)}% Range"
+        opp_ranges = a.get('opp_range_percent', 1.0)
+        if isinstance(opp_ranges, list):
+            range_str = " | ".join([f"{int(r*100)}%" if r < 1.0 else "100%" for r in opp_ranges]) + " Ranges"
+        else:
+            range_str = "100% Aleatório" if opp_ranges == 1.0 else f"Top {int(opp_ranges*100)}% Range"
         print(f"║ {C_BOLD}PROBABILIDADES (MONTE CARLO - {self.iterations:,} iterações vs {range_str}):{C_RESET}")
         print(
             f"║   • Taxa de Vitória (P_win): {a['p_win']:6.2f}%  │ "

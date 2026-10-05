@@ -187,8 +187,13 @@ def make_decision(
             reason = f"Mesa em check. Controle de pote e SPR (Score de Confiança {decision_score:.1f})."
     else:
         if ev < 0:
-            action = "FOLD"
-            reason = f"EV matemático negativo ({ev:+.1f}). Matemática não justifica o Call."
+            margin = pot_odds - equity
+            if margin <= 3.5:
+                action = "FOLD"
+                reason = f"EV levemente negativo ({ev:+.1f}). Decisão marginal / Borderline FOLD."
+            else:
+                action = "FOLD"
+                reason = f"EV matemático negativo ({ev:+.1f}). Matemática não justifica o Call."
         else:
             call_threshold = 35.0 if loose_mode else 45.0
             

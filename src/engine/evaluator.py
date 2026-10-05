@@ -157,12 +157,14 @@ def get_hand_category_name(score: Tuple[int, ...]) -> str:
     return HAND_CATEGORIES.get(category_id, "Desconhecida")
 
 
+from typing import List, Tuple, Dict, Any, Optional, Union
+
 def calculate_equity(
     hero_cards: List[str],
     board_cards: List[str],
     num_opponents: int = 4,
     iterations: int = 10000,
-    opp_range_percent: float = 1.0
+    opp_range_percent: Union[float, List[float]] = 1.0
 ) -> Tuple[float, float, float, float, Tuple[int, ...]]:
     """
     Calcula a probabilidade de Vitória, Empate e Derrota via Simulação de Monte Carlo.
@@ -185,9 +187,20 @@ def calculate_equity(
     losses = 0
     t_start = time.time()
 
-    opp_combos = []
-    if opp_range_percent < 1.0:
-        opp_combos = get_opponent_range(FULL_DECK, dead_cards, opp_range_percent)
+    # Create combos for each opponent
+    if isinstance(opp_range_percent, float):
+        ranges = [opp_range_percent] * num_opponents
+    else:
+        ranges = opp_range_percent[:num_opponents]
+        while len(ranges) < num_opponents:
+            ranges.append(1.0)  # pad with 100% if not enough provided
+
+    opp_combos_list = []
+    for r in ranges:
+        if r < 1.0:
+            opp_combos_list.append(get_opponent_range(FULL_DECK, dead_cards, r))
+        else:
+            opp_combos_list.append([])  # empty means 100% random
 
     for _ in range(iterations):
         drawn_board = random.sample(available_deck, cards_needed_board)
@@ -198,41 +211,36 @@ def calculate_equity(
         hero_tied = False
         hero_lost = False
 
-        if opp_combos:
-            used_cards = set(drawn_board)
-            for _ in range(num_opponents):
-                for _ in range(10): # retry limit
-                    opp_cards = random.choice(opp_combos)
+        used_cards = set(drawn_board)
+        for i in range(num_opponents):
+            combos = opp_combos_list[i]
+            if combos:
+                # Select from specific range
+                for _ in range(10): # retry limit for collisions
+                    opp_cards = random.choice(combos)
                     if opp_cards[0] not in used_cards and opp_cards[1] not in used_cards:
                         used_cards.add(opp_cards[0])
                         used_cards.add(opp_cards[1])
                         break
                 else:
+                    # fallback to random if collision limit reached
                     avail_opp = [c for c in available_deck if c not in used_cards]
                     opp_cards = tuple(random.sample(avail_opp, 2))
                     used_cards.add(opp_cards[0])
                     used_cards.add(opp_cards[1])
+            else:
+                # 100% random for this opponent
+                avail_opp = [c for c in available_deck if c not in used_cards]
+                opp_cards = tuple(random.sample(avail_opp, 2))
+                used_cards.add(opp_cards[0])
+                used_cards.add(opp_cards[1])
 
-                opp_score = evaluate_7_cards(list(opp_cards) + sim_board)
-                if opp_score > hero_score:
-                    hero_lost = True
-                    break
-                elif opp_score == hero_score:
-                    hero_tied = True
-        else:
-            avail_opp = [c for c in available_deck if c not in drawn_board]
-            drawn_opps = random.sample(avail_opp, num_opponents * 2)
-            idx_offset = 0
-            for _ in range(num_opponents):
-                opp_cards = drawn_opps[idx_offset : idx_offset + 2]
-                idx_offset += 2
-                opp_score = evaluate_7_cards(opp_cards + sim_board)
-
-                if opp_score > hero_score:
-                    hero_lost = True
-                    break
-                elif opp_score == hero_score:
-                    hero_tied = True
+            opp_score = evaluate_7_cards(list(opp_cards) + sim_board)
+            if opp_score > hero_score:
+                hero_lost = True
+                break
+            elif opp_score == hero_score:
+                hero_tied = True
 
         if hero_lost:
             losses += 1
