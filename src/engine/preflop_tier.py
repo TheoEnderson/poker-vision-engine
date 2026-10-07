@@ -67,10 +67,12 @@ def get_preflop_tier(hero_cards: List[str]) -> int:
         return 3  # K2s-KJs
     if suited and v1 == 12 and v2 <= 10:
         return 3  # Q2s-QTs
-    if suited and v1 == v2 + 1 and 7 <= v1 <= 10:
-        return 3  # 76s, 87s, 98s, T9s
-    if suited and v1 == v2 + 2 and 8 <= v1 <= 11:
-        return 3  # 86s, 97s, T8s, J9s
+    if suited and v1 == v2 + 1:
+        return 3  # Todos os conectores do mesmo naipe (ex: 43s, 54s, etc)
+    if suited and v1 == v2 + 2:
+        return 3  # Todos os 1-gappers do mesmo naipe (ex: 53s, 64s, etc)
+    if suited and v1 == v2 + 3 and v1 >= 7:
+        return 3  # 2-gappers do mesmo naipe um pouco maiores (ex: 74s+)
     
     # Tier 4
     return 4

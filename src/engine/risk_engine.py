@@ -194,10 +194,10 @@ def make_decision(
             implied_odds_tolerance = 3.5
             is_cheap_call = bet_to_call <= (hero_stack * 0.05)
             
-            if is_cheap_call and decision_score >= 60.0:  # Mãos tier 1-3 (inclui Ax suited, pares, conectores)
+            if is_cheap_call and (decision_score >= 50.0 or tier <= 3):  # Mãos tier 1-3 ganham bônus
                 implied_odds_tolerance = 15.0  # Tolera até 15% de desvantagem matemática por causa do potencial
             
-            if margin <= implied_odds_tolerance and is_cheap_call and decision_score >= 60.0:
+            if margin <= implied_odds_tolerance and is_cheap_call and (decision_score >= 50.0 or tier <= 3):
                 action = "CALL"
                 recommended_amount = bet_to_call
                 reason = f"Borderline negativo ({ev:+.1f}), mas CALL por Implied Odds pré-flop (Aposta baixa)."
