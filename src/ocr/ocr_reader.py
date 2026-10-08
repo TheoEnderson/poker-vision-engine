@@ -143,6 +143,10 @@ def parse_action_button_text(raw_text: str) -> Dict[str, Any]:
     Interpreta o texto extraído via OCR do botão central de ação do Replay Poker.
     """
     clean = raw_text.strip().upper()
+    
+    if "LEVANTAR" in clean or "SENTAR" in clean:
+        return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING"}
+        
     numbers = re.findall(r"\d+(?:[.,]\d+)*", clean)
     if numbers:
         raw_num = numbers[-1].replace(",", "").replace(".", "")
@@ -211,7 +215,8 @@ def detect_turn_and_bet_to_call(
     for c in cnts:
         bx, by, bw, bh = cv2.boundingRect(c)
         area = cv2.contourArea(c)
-        if area > 8000 and bh > 40 and (search_y1 + by >= 970):
+        # Relax constraints to account for different browser zooms/resolutions
+        if area > 4000 and bh > 25 and (search_y1 + by >= 800):
             action_buttons.append((bx, by, bw, bh, area))
 
     if not action_buttons:

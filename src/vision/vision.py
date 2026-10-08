@@ -48,6 +48,16 @@ def grab_screen_cdp() -> Optional[np.ndarray]:
             img_data = base64.b64decode(result['result']['data'])
             nparr = np.frombuffer(img_data, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            # Ajuste de alinhamento: o CDP captura apenas o viewport (ex: 1920x989).
+            # Como as ROIs do bot foram calibradas para tela cheia (1920x1080), 
+            # adicionamos uma faixa preta no topo equivalente ao tamanho da barra do Ubuntu + abas do Chrome
+            h, w = frame.shape[:2]
+            if h < 1080 and w == 1920:
+                pad_h = 1080 - h
+                padding = np.zeros((pad_h, w, 3), dtype=np.uint8)
+                frame = np.vstack((padding, frame))
+                
             return frame
             
     except Exception:
