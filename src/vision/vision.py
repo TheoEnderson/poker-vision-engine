@@ -14,16 +14,61 @@ import numpy as np
 from src.config import PROJECT_ROOT, SAMPLES_DIR
 
 
+import requests
+import websocket
+import json
+import base64
+
+def grab_screen_cdp() -> Optional[np.ndarray]:
+    """
+    Captura a aba do ReplayPoker diretamente do motor do Chrome via DevTools Protocol (CDP).
+    Fura completamente bloqueios do Wayland e ignora janelas sobrepostas.
+    """
+    try:
+        res = requests.get('http://localhost:9222/json', timeout=1.0)
+        tabs = res.json()
+        
+        # Procura a aba do ReplayPoker ou a primeira aba válida do tipo 'page'
+        tab = next((t for t in tabs if t['type'] == 'page' and 'replaypoker' in t.get('url', '').lower()), None)
+        if not tab:
+            tab = next((t for t in tabs if t['type'] == 'page' and not t['url'].startswith('chrome-extension')), None)
+            
+        if not tab:
+            return None
+            
+        ws_url = tab['webSocketDebuggerUrl']
+        ws = websocket.create_connection(ws_url, timeout=2.0)
+        
+        ws.send(json.dumps({"id": 1, "method": "Page.captureScreenshot", "params": {"format": "png"}}))
+        
+        result = json.loads(ws.recv())
+        ws.close()
+        
+        if 'result' in result and 'data' in result['result']:
+            img_data = base64.b64decode(result['result']['data'])
+            nparr = np.frombuffer(img_data, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            return frame
+            
+    except Exception:
+        return None
+    
+    return None
+
 def grab_screen() -> np.ndarray:
     """
-    Captura a tela do monitor primário com suporte completo a ambientes Linux (Wayland e X11/Xorg) e Windows.
+    Captura a tela do monitor primário ou aba do navegador.
     
-    - No Wayland: Executa o utilitário 'grim' para capturar em memória compartilhada (/dev/shm/poker_frame.png).
-    - No X11 / Xorg / Windows: Utiliza a biblioteca 'mss' capturando os pixels diretamente na memória RAM sem I/O de disco.
-    
-    Retorna:
-        numpy.ndarray da imagem capturada em formato BGR do OpenCV.
+    1. Tenta usar o Chrome DevTools Protocol (CDP) que fura os bloqueios do Wayland e captura em segundo plano.
+    2. No Wayland: Executa o utilitário 'grim'.
+    3. No X11 / Xorg / Windows: Utiliza 'mss'.
     """
+    # 1. Tenta CDP (Funciona em Wayland, X11, Minimized, etc)
+    frame = grab_screen_cdp()
+    if frame is not None:
+        return frame
+
+    # 2. Captura convencional da tela
     session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
     wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
 
@@ -38,17 +83,14 @@ def grab_screen() -> np.ndarray:
                 if frame is not None:
                     return frame
         except Exception:
-            # Fallback para mss caso o comando grim falhe
             pass
 
     # Modo X11 / Xorg ou fallback de alto desempenho via mss
     mss_cls = getattr(mss, "MSS", mss.mss)
     with mss_cls() as sct:
-        # Monitor 1 é a tela primária (Monitor 0 é a área virtual unificada)
         monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
         sct_img = sct.grab(monitor)
         frame = np.array(sct_img)
-        # Converte de BGRA (padrão mss) para BGR (padrão OpenCV)
         return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
 
