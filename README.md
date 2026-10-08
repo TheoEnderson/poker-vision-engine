@@ -9,7 +9,7 @@
 
 Assistente autônomo de visão computacional em tempo real e motor de tomada de decisão com base na Teoria dos Jogos (GTO) para Texas Hold'em.
 
-Construído com **zero invasividade** (captura visual pura via buffers de memória em Linux Wayland/X11 e Windows GDI), o PAE monitora mesas de poker ao vivo, segmenta cartas comunitárias e da mão do Hero via Template Matching multi-escala, executa OCR em dois estágios para extração de potes e stacks, garante a integridade sequencial do jogo através de uma Máquina de Estados Finitos (FSM) estrita e calcula o Valor Esperado (EV) e Pot Odds em tempo real por meio de simulações de Monte Carlo.
+Construído com **zero invasividade** (captura visual via Chrome DevTools Protocol / CDP Websockets ignorando os bloqueios do Wayland e operando em background), o PAE monitora mesas de poker ao vivo, segmenta cartas comunitárias e da mão do Hero via Template Matching multi-escala, executa OCR em dois estágios para extração de potes e stacks, garante a integridade sequencial do jogo através de uma Máquina de Estados Finitos (FSM) estrita e calcula o Valor Esperado (EV) e Pot Odds em tempo real por meio de simulações de Monte Carlo.
 
 ---
 
@@ -27,6 +27,8 @@ Construído com **zero invasividade** (captura visual pura via buffers de memór
 
 ## Principais Funcionalidades
 
+- **Captura Headless (CDP)**: Utiliza Chrome DevTools Protocol para furar completamente as restrições de captura de tela do Wayland, permitindo analisar a aba do jogo em background mesmo encoberta.
+- **Detecção Dinâmica de Contornos**: Localização automática das cartas (Board/Hero) via `cv2.findContours` imune a resizes e pequenos scrools de janela.
 - **Template Matching Multi-Escala Normalizado**: Reconhecimento dinâmico de Ranks e Naipes testando variações de escala entre 60% e 150%, tornando o sistema imune a diferentes resoluções de tela e densidades de pixel (DPI).
 - **Filtro Cromático HSV para Naipes**: Separação matemática rigorosa entre naipes vermelhos (`♥`, `♦`) e pretos (`♠`, `♣`), eliminando confusões visuais.
 - **OCR com Binarização de Otsu e Filtro de Contorno**: Leitura numérica precisa do pote e stack do Hero com redimensionamento 2x.
@@ -62,7 +64,7 @@ Exemplo (`sites.json`):
 ```mermaid
 flowchart TD
     subgraph Camada de Captura
-        SCR[Captura de Tela - grim/mss] --> RAW[Frame BGR Bruto]
+        SCR[Captura de Tela - CDP/WebSockets] --> RAW[Frame BGR Bruto]
     end
 
     subgraph Pipeline de Visão Computacional
@@ -136,17 +138,22 @@ POKER/
 
 ### Linux (Ubuntu / Debian / Arch)
 
-1. **Instalar dependências de sistema** (Python, Tesseract OCR, Grim para Wayland):
+1. **Instalar dependências de sistema** (Python, Tesseract OCR):
    ```bash
    # Ubuntu / Debian
    sudo apt update
-   sudo apt install -y python3 python3-pip python3-venv tesseract-ocr grim
+   sudo apt install -y python3 python3-pip python3-venv tesseract-ocr google-chrome-stable
 
    # Arch Linux
-   sudo pacman -S python python-pip tesseract grim
+   sudo pacman -S python python-pip tesseract google-chrome
    ```
 
-2. **Configurar o ambiente virtual Python**:
+2. **Inicie o Chrome com porta de depuração aberta (necessário para o Wayland/CDP Capture)**:
+   ```bash
+   google-chrome --remote-debugging-port=9222 --user-data-dir=$HOME/chrome-poker-bot --remote-allow-origins=*
+   ```
+
+3. **Configurar o ambiente virtual Python**:
    ```bash
    cd ~/Projetos/POKER
    python3 -m venv venv
@@ -184,7 +191,6 @@ cp .env.example .env
 | :--- | :--- | :--- |
 | `POKER_SITE` | `ReplayPoker` | Nome da configuração no `sites.json` a ser mapeada. |
 | `HERO_IDENTIFIER` | `The_Ment_End` | Nome do jogador para ancoragem do OCR visual. |
-| `FORCE_X11_MSS` | `False` | Força a captura via X11 MSS (útil caso Wayland falhe). |
 | `POLL_INTERVAL` | `0.5` | Segundos entre cada quadro analisado da mesa. |
 | `HEAVY_BET_STACK_RATIO`| `0.40` | Limite (40%) de stack aceitável antes de ativar Folds defensivos. |
 
