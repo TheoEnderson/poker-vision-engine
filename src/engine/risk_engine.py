@@ -186,7 +186,7 @@ def make_decision(
                 action = "RAISE" if bet_to_call > 0 else "BET"
                 recommended_amount = min(hero_stack, round(pot_size * pct, 1))
             elif chosen_action == "ALL_IN":
-                    action = "ALL-IN"
+                action = "ALL-IN"
                 recommended_amount = hero_stack
                 
             # Traduz chaves da estratégia para strings reais no painel
