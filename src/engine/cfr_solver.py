@@ -28,15 +28,19 @@ class CFRSolver:
             n = len(valid_actions)
             return {a: 1.0 / n for a in valid_actions}
 
-    def compute_utility(self, node: GameNode, equity: float) -> float:
+    def compute_utility(self, node: GameNode, equity: float, initial_hero_stack: float) -> float:
         """
         Calcula a Função de Utilidade Completa no nó terminal a partir da perspectiva do Hero.
-        Utility = Chip_EV + Fold_Equity + Positional_Value
+        Utility = Expected_Final_Chips - Initial_Chips + Heuristics
         """
-        # Chip EV
         p_win = equity / 100.0
         p_lose = 1.0 - p_win
-        chip_ev = (p_win * node.pot_size) - (p_lose * node.bet_to_call)
+        
+        # Expected Final Chips do Hero
+        expected_final_chips = (p_win * (node.hero_stack + node.pot_size)) + (p_lose * node.hero_stack)
+        
+        # Lucro líquido esperado (Chip EV real)
+        chip_ev = expected_final_chips - initial_hero_stack
         
         # Fold Equity (Heurística baseada no histórico de agressão)
         fold_equity = 0.0
@@ -56,7 +60,7 @@ class CFRSolver:
         utility = chip_ev + fold_equity + positional_value
         return utility
 
-    def run_cfr(self, node: GameNode, hero_cards: List[str], equity: float, p0: float, p1: float) -> float:
+    def run_cfr(self, node: GameNode, hero_cards: List[str], equity: float, p0: float, p1: float, initial_hero_stack: float) -> float:
         """
         Executa uma iteração de CFR recursivamente na GameTree.
         Retorna a utilidade do nó sob a perspectiva do jogador atual (node.player).
@@ -64,20 +68,22 @@ class CFRSolver:
         if node.is_terminal():
             # Se for terminal por FOLD
             if node.history and node.history.endswith("FOLD"):
-                # node.player é o próximo que iria jogar (o vencedor, pois o anterior foldou)
-                # O perdedor perde sua bet_to_call ou uma proporção.
-                # Para simplificar, o vencedor ganha pot_size.
-                return node.pot_size
+                # Se next_player é 0, Hero ganha o pote pois Villain foldou.
+                if node.player == 0:
+                    util_hero = (node.hero_stack + node.pot_size) - initial_hero_stack
+                else: # Hero foldou
+                    util_hero = node.hero_stack - initial_hero_stack
+                return util_hero if node.player == 0 else -util_hero
             
             # Se for showdown, o utilitário do Hero é dado pela heurística.
-            util_hero = self.compute_utility(node, equity)
+            util_hero = self.compute_utility(node, equity, initial_hero_stack)
             return util_hero if node.player == 0 else -util_hero
             
         info_set = node.get_info_set(hero_cards)
         valid_actions = list(node.children.keys())
         
         if not valid_actions:
-            util_hero = self.compute_utility(node, equity)
+            util_hero = self.compute_utility(node, equity, initial_hero_stack)
             return util_hero if node.player == 0 else -util_hero
             
         strategy = self.get_strategy(info_set, valid_actions)
@@ -98,13 +104,10 @@ class CFRSolver:
             child_node = node.children[a]
             
             if node.player == 0:
-                # utilidade retornada por child_node é do ponto de vista do child_node.player
-                child_util = self.run_cfr(child_node, hero_cards, equity, p0 * strategy[a], p1)
+                child_util = self.run_cfr(child_node, hero_cards, equity, p0 * strategy[a], p1, initial_hero_stack)
             else:
-                child_util = self.run_cfr(child_node, hero_cards, equity, p0, p1 * strategy[a])
+                child_util = self.run_cfr(child_node, hero_cards, equity, p0, p1 * strategy[a], initial_hero_stack)
                 
-            # Se o child_node for o outro jogador, a utilidade pra mim é o oposto da utilidade pra ele (Zero Sum)
-            # A menos que child_node seja do mesmo jogador (ex: rua avança e o mesmo joga primeiro, raro em HU mas possível)
             util_for_me = child_util if child_node.player == node.player else -child_util
                 
             action_utils[a] = util_for_me
@@ -115,7 +118,7 @@ class CFRSolver:
         for a in valid_actions:
             regret = action_utils[a] - node_util
             new_regret = self.cumulative_regrets[info_set][a] + (weight * regret)
-            self.cumulative_regrets[info_set][a] = max(0.0, new_regret) # Modificação CFR+
+            self.cumulative_regrets[info_set][a] = max(0.0, new_regret) # CFR+
                 
         return node_util
 
@@ -123,8 +126,9 @@ class CFRSolver:
         """
         Roda o CFR para o subjogo atual. Retorna a Estratégia Mista (Mixed Strategy) final.
         """
+        initial_hero_stack = root.hero_stack
         for _ in range(iterations):
-            self.run_cfr(root, hero_cards, equity, 1.0, 1.0)
+            self.run_cfr(root, hero_cards, equity, 1.0, 1.0, initial_hero_stack)
             
         info_set = root.get_info_set(hero_cards)
         valid_actions = list(root.children.keys())
@@ -135,7 +139,6 @@ class CFRSolver:
         if info_set not in self.cumulative_strategy:
             return {a: 1.0/len(valid_actions) for a in valid_actions}
             
-        # Calcula estratégia final baseada na cumulativa
         strategy_sum = self.cumulative_strategy[info_set]
         total = sum(strategy_sum.values())
         
