@@ -599,7 +599,22 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 app.hero_position = "Desconhecida"
 
             app.hero_stack = extract_hero_stack(frame, last_stack=app.hero_stack)
-            bet_to_call = turn_info["bet_to_call"]
+            bet_to_call = turn_info.get("bet_to_call")
+            
+            # Heurística Dinâmica de Aposta (Delta do Pote)
+            # Se o OCR falhou em extrair o valor mas sabemos que é para pagar, 
+            # inferimos a aposta pelo crescimento anormal do pote na mesa.
+            if bet_to_call is None or (bet_to_call == 0.0 and turn_info.get("action_type") == "CALL"):
+                if pot_size > last_pot:
+                    # Se o pote saltou desde o último ciclo, a diferença é a agressão.
+                    # Exemplo: Pote 450 -> 1500 (Salto 1050). Se ninguém pagou, a bet é 1050.
+                    # Para não sermos tão conservadores com multi-way, assumimos delta inteiro provisoriamente
+                    bet_to_call = pot_size - last_pot
+                else:
+                    bet_to_call = 0.0
+            
+            if bet_to_call is None:
+                bet_to_call = 0.0
 
             app.process_cards(
                 detected_cards=detected_cards,

@@ -141,15 +141,46 @@ def extract_pot(
 def parse_action_button_text(raw_text: str) -> Dict[str, Any]:
     """
     Interpreta o texto extraído via OCR da região de botões de ação.
+    Implementa heurística robusa para inferência de Aposta a Pagar.
     """
     clean = raw_text.strip().upper()
     
     if "LEVANTAR" in clean or "SENTAR" in clean:
         return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING"}
         
-    # Se pudermos dar CHECK/PASSO, o bet_to_call é 0 (mesmo que haja botão de apostar)
+    # Se explicitamente pudermos dar CHECK/PASSO, o bet_to_call é 0 (ação livre)
     if "PASSO" in clean or "CHECK" in clean or "PASS" in clean:
         return {"is_hero_turn": True, "bet_to_call": 0.0, "action_type": "CHECK"}
+
+    # Extrai TODOS os números contidos na string de botões para achar a Aposta a Pagar
+    numbers = re.findall(r"\d+(?:[.,]\d+)*", clean)
+    valid_nums = []
+    for n in numbers:
+        raw_num = n.replace(",", "").replace(".", "")
+        try:
+            val = float(raw_num)
+            if val > 0:
+                valid_nums.append(val)
+        except ValueError:
+            pass
+
+    # Se há números e NÃO há CHECK, estamos enfrentando uma aposta.
+    # O menor número presente na tela costuma ser a aposta de "Call" 
+    # (enquanto o botão de Raise/Aumentar terá valores maiores).
+    if valid_nums:
+        bet_to_call = min(valid_nums)
+        # Proteção mínima contra ruídos (ex: OCR lendo '1' sozinho)
+        if bet_to_call >= 2.0 or len(valid_nums) > 1:
+            return {"is_hero_turn": True, "bet_to_call": bet_to_call, "action_type": "CALL"}
+
+    # Fallbacks se não acharmos números claros mas vermos palavras de ação
+    if "PAGAR" in clean or "CALL" in clean or "FOLD" in clean or "DESISTIR" in clean:
+        # Significa que é nosso turno, mas não conseguimos ler o valor numérico.
+        # Retornamos None (no futuro, o delta do pote resolve)
+        return {"is_hero_turn": True, "bet_to_call": None, "action_type": "CALL"}
+
+    return {"is_hero_turn": True, "bet_to_call": 0.0, "action_type": "CHECK"}
+
 
     # Se tivermos que PAGAR/CALL, vamos extrair o valor associado
     match = re.search(r"(?:PAGAR|CALL)\s*([\d.,]+)", clean)
