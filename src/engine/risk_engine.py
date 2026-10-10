@@ -166,6 +166,22 @@ def make_decision(
         if score_cards[0] >= 1: # Pelo menos um par
             has_pair_or_better = True
             
+    # Issue #7: Preparando o nó raiz da Árvore de Jogo (V3) para o futuro CFR (V4)
+    try:
+        from src.engine.game_tree import GameNode, GameTreeBuilder
+        root_node = GameNode(
+            player=0,
+            pot_size=pot_size,
+            hero_stack=hero_stack,
+            villain_stack=hero_stack, # Assumindo stack efetivo espelhado temporariamente
+            board_cards=board_cards if board_cards else [],
+            current_street=state,
+            bet_to_call=bet_to_call
+        )
+        # O construtor está pronto para o Subgame Solver
+    except ImportError:
+        pass
+            
     # Camada 2: Cálculo do Score Multidimensional (Confiança/Estratégia)
     decision_score = calculate_decision_score(
         equity=equity, pot_odds=pot_odds, ev=ev, spr=spr, 
