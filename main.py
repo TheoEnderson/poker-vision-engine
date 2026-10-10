@@ -146,7 +146,7 @@ class PokerAnalyticsApp:
         if actual_pot is None:
             actual_pot = 85.0
         new_position = extract_hero_position(frame_or_path, verbose=False)
-        if new_position != "Desconhecida":
+        if new_position != "Desconhecida" and self.hero_position == "Desconhecida":
             self.hero_position = new_position
 
         # 3. Leitura do turno e aposta a pagar (bet_to_call) via OCR
@@ -188,14 +188,17 @@ class PokerAnalyticsApp:
                 self.hero_cards = []
                 self.opponent_model.reset()
                 self.last_analysis = None
+                self.hero_position = "Desconhecida"
             elif current_state == HandState.PRE_FLOP and prev_state not in (HandState.PRE_FLOP, HandState.WAITING_HAND):
                 self.hero_cards = []
                 self.opponent_model.reset()
                 self.last_analysis = None
+                self.hero_position = "Desconhecida"
             elif len(current_board) == 0 and len(self.last_board) > 0:
                 self.hero_cards = []
                 self.opponent_model.reset()
                 self.last_analysis = None
+                self.hero_position = "Desconhecida"
 
         # 2. Otimização de Performance: Verifica se houve alteração na mesa
         last_pot = self.last_analysis.get("pot_size") if self.last_analysis else None
@@ -439,11 +442,14 @@ class PokerAnalyticsApp:
         print(f"║ {C_BOLD}PROBABILIDADES (MONTE CARLO - {self.iterations:,} iterações vs {range_str}):{C_RESET}")
         print(
             f"║   • Taxa de Vitória (P_win): {a['p_win']:6.2f}%  │ "
+            f"• Taxa de Empate  (P_tie): {a['p_tie']:6.2f}%"
+        )
+        print(
+            f"║   • Taxa de Derrota (P_lose): {a['p_lose']:5.2f}% │ "
             f"• Equity Consolidada:  {a['equity']:8.2f}%"
         )
         print(
-            f"║   • Taxa de Derrota (P_lose): {a['p_lose']:5.2f}%  │ "
-            f"• Tempo de Simulação:  {a['sim_time']:8.3f}s"
+            f"║   • Tempo de Simulação:       {a['sim_time']:8.3f}s"
         )
         print(f"╠{sep_double}╣")
         print(f"║ {C_BOLD}ANÁLISE DE RISCO & VALOR ESPERADO (EV):{C_RESET}")
@@ -451,7 +457,14 @@ class PokerAnalyticsApp:
         print("║")
         print(f"║   >>> DECISÃO RECOMENDADA: {action_color}[ {a['action']} ]{C_RESET} ")
         if a["recommended_amount"] > 0:
-            print(f"║   • Valor Recomendado:     {a['recommended_amount']:.1f} fichas")
+            if a["action"] == "CALL":
+                print(f"║   • Completar Apostas (Adicional):  {a['recommended_amount']:.1f} fichas")
+            elif a["action"] == "RAISE":
+                print(f"║   • Aumentar Para (Total na mesa):  {a['recommended_amount']:.1f} fichas")
+            elif a["action"] == "BET":
+                print(f"║   • Apostar (Valor Adicional):      {a['recommended_amount']:.1f} fichas")
+            else:
+                print(f"║   • Valor Recomendado:              {a['recommended_amount']:.1f} fichas")
         print("║")
         print(f"║   • Justificativa: {a['reason']}")
         print(f"╚{sep_double}╝\n")
@@ -496,6 +509,7 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                         app.hero_cards = []
                         app.state_machine.reset_hand()
                         app.last_analysis = None
+                        app.hero_position = "Desconhecida"
             else:
                 app.hero_absence_frames = 0
 
@@ -543,6 +557,7 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                         app.hero_cards_changed_frames = 0
                         app.state_machine.reset_hand()
                         app.last_analysis = None
+                        app.hero_position = "Desconhecida"
                 else:
                     app.hero_cards_changed_frames = 0
             else:
@@ -569,7 +584,7 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 pot_size = app.last_analysis.get("pot_size", 85.0) if app.last_analysis else 85.0
             
             new_position = extract_hero_position(frame, verbose=False)
-            if new_position != "Desconhecida":
+            if new_position != "Desconhecida" and app.hero_position == "Desconhecida":
                 app.hero_position = new_position
 
             # DETECÇÃO EXPLÍCITA DE NOVA MÃO (Especial para Folds no Pre-Flop):
@@ -581,6 +596,7 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 already_has_valid_hand = False
                 app.last_analysis = None
                 app.state_machine.reset_hand()
+                app.hero_position = "Desconhecida"
 
             app.hero_stack = extract_hero_stack(frame, last_stack=app.hero_stack)
             bet_to_call = turn_info["bet_to_call"]

@@ -244,9 +244,8 @@ def make_decision(
                 cfr_strategy = solver.solve(root_node, hero_cards, equity, iterations=30)
                 
                 if cfr_strategy:
-                    actions = list(cfr_strategy.keys())
-                    probs = list(cfr_strategy.values())
-                    chosen_action = random.choices(actions, weights=probs, k=1)[0]
+                    # Seleciona a ação com a maior probabilidade (Argmax) para UX consistente
+                    chosen_action = max(cfr_strategy.items(), key=lambda x: x[1])[0]
                     
                     action = "FOLD"
                     recommended_amount = 0.0
