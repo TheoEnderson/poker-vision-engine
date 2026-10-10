@@ -57,22 +57,36 @@ def get_preflop_tier(hero_cards: List[str]) -> int:
         return 2  # AJs
     if suited and v1 == 13 and v2 == 12:
         return 2  # KQs
+    if not suited and v1 == 14 and v2 == 11:
+        return 2  # AJo
+    if not suited and v1 == 13 and v2 == 12:
+        return 2  # KQo
     
     # Tier 3
     if is_pair and 2 <= v1 <= 7:
         return 3  # 22-77
+    if v1 == 14 and v2 == 10:
+        return 3  # ATs, ATo
     if suited and v1 == 14 and v2 <= 9:
         return 3  # A2s-A9s
-    if suited and v1 == 13 and v2 <= 11:
-        return 3  # K2s-KJs
+    if not suited and v1 == 14 and v2 <= 9 and v2 >= 7:
+        return 3  # A7o-A9o
+    if v1 == 13 and v2 == 11:
+        return 3  # KJs, KJo
+    if suited and v1 == 13 and v2 <= 10:
+        return 3  # K2s-KTs
+    if v1 == 12 and v2 == 11:
+        return 3  # QJs, QJo
     if suited and v1 == 12 and v2 <= 10:
         return 3  # Q2s-QTs
-    if suited and v1 == v2 + 1:
-        return 3  # Todos os conectores do mesmo naipe (ex: 43s, 54s, etc)
-    if suited and v1 == v2 + 2:
-        return 3  # Todos os 1-gappers do mesmo naipe (ex: 53s, 64s, etc)
-    if suited and v1 == v2 + 3 and v1 >= 7:
-        return 3  # 2-gappers do mesmo naipe um pouco maiores (ex: 74s+)
+    if suited and v1 == v2 + 1 and v1 >= 5:
+        return 3  # Todos os conectores do mesmo naipe (ex: 54s+)
+    if not suited and v1 == v2 + 1 and v1 >= 9:
+        return 3  # Conectores offsuit fortes (ex: T9o, JTo)
+    if suited and v1 == v2 + 2 and v1 >= 7:
+        return 3  # Todos os 1-gappers do mesmo naipe (ex: 75s+)
+    if suited and v1 == v2 + 3 and v1 >= 8:
+        return 3  # 2-gappers do mesmo naipe um pouco maiores (ex: 85s+)
     
     # Tier 4
     return 4

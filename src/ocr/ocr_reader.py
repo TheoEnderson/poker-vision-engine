@@ -140,25 +140,39 @@ def extract_pot(
 
 def parse_action_button_text(raw_text: str) -> Dict[str, Any]:
     """
-    Interpreta o texto extraído via OCR do botão central de ação do Replay Poker.
+    Interpreta o texto extraído via OCR da região de botões de ação.
     """
     clean = raw_text.strip().upper()
     
     if "LEVANTAR" in clean or "SENTAR" in clean:
         return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING"}
         
-    numbers = re.findall(r"\d+(?:[.,]\d+)*", clean)
-    if numbers:
-        raw_num = numbers[-1].replace(",", "").replace(".", "")
+    # Se pudermos dar CHECK/PASSO, o bet_to_call é 0 (mesmo que haja botão de apostar)
+    if "PASSO" in clean or "CHECK" in clean or "PASS" in clean:
+        return {"is_hero_turn": True, "bet_to_call": 0.0, "action_type": "CHECK"}
+
+    # Se tivermos que PAGAR/CALL, vamos extrair o valor associado
+    match = re.search(r"(?:PAGAR|CALL)\s*([\d.,]+)", clean)
+    if match:
+        raw_num = match.group(1).replace(",", "").replace(".", "")
         try:
-            bet_val = float(raw_num)
+            return {"is_hero_turn": True, "bet_to_call": float(raw_num), "action_type": "CALL"}
         except ValueError:
-            bet_val = 0.0
-        return {"is_hero_turn": True, "bet_to_call": bet_val, "action_type": "CALL"}
-    elif "PASSO" in clean or "CHECK" in clean or "PASS" in clean:
-        return {"is_hero_turn": True, "bet_to_call": 0.0, "action_type": "CHECK"}
-    else:
-        return {"is_hero_turn": True, "bet_to_call": 0.0, "action_type": "CHECK"}
+            pass
+
+    # Fallback se apenas achar números soltos (assume que o menor valor pode ser o call se for Pagar/Apostar, mas isso é frágil)
+    # Então se tivermos FOLD, provavelmente é nossa vez e temos que pagar algo
+    if "FOLD" in clean or "DESISTIR" in clean:
+        numbers = re.findall(r"\d+(?:[.,]\d+)*", clean)
+        if numbers:
+            # Pega o primeiro número (geralmente Pagar X, Apostar Y. Pagar vem antes)
+            raw_num = numbers[0].replace(",", "").replace(".", "")
+            try:
+                return {"is_hero_turn": True, "bet_to_call": float(raw_num), "action_type": "CALL"}
+            except ValueError:
+                pass
+
+    return {"is_hero_turn": True, "bet_to_call": 0.0, "action_type": "CHECK"}
 
 
 def detect_turn_and_bet_to_call(
@@ -204,19 +218,22 @@ def detect_turn_and_bet_to_call(
         return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING"}
 
     b, g, r = cv2.split(panel)
-    red_mask = (
-        (r.astype(int) - g.astype(int) > 75)
-        & (r.astype(int) - b.astype(int) > 75)
-        & (r > 150)
-    ).astype(np.uint8) * 255
+    r_int, g_int, b_int = r.astype(int), g.astype(int), b.astype(int)
+    
+    is_red = (r_int - g_int > 50) & (r_int - b_int > 50) & (r > 120)
+    is_green = (g_int - r_int > 30) & (g_int - b_int > 30) & (g > 120)
+    is_blue = (b_int - r_int > 30) & (b_int - g_int > 30) & (b > 120)
+    is_orange = (r_int > 150) & (g_int > 100) & (b_int < 100)
+    
+    button_mask = (is_red | is_green | is_blue | is_orange).astype(np.uint8) * 255
 
-    cnts, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts, _ = cv2.findContours(button_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     action_buttons = []
     for c in cnts:
         bx, by, bw, bh = cv2.boundingRect(c)
         area = cv2.contourArea(c)
-        # Relax constraints to account for different browser zooms/resolutions
-        if area > 4000 and bh > 25 and (search_y1 + by >= 800):
+        # Relax constraints to account for different browser zooms/resolutions and non-red buttons
+        if area > 2000 and bh > 25:
             action_buttons.append((bx, by, bw, bh, area))
 
     if not action_buttons:
@@ -224,24 +241,24 @@ def detect_turn_and_bet_to_call(
             print("=" * 70)
             print("DETECÇÃO DE TURNO DO HERO - Poker Analytics")
             print("=" * 70)
-            print("Status: Botões vermelhos ausentes na mesa -> Turno de outro jogador (WAITING)")
+            print("Status: Botões de ação ausentes na mesa -> Turno de outro jogador (WAITING)")
             print("=" * 70 + "\n")
         return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING"}
 
     action_buttons.sort(key=lambda b: b[0])
 
-    if len(action_buttons) >= 3:
-        mid_btn = action_buttons[1]
-    elif len(action_buttons) == 2:
-        mid_btn = action_buttons[1]
-    else:
-        mid_btn = action_buttons[0]
+    # Encontra o bounding box global de todos os botões detectados
+    x_min = min(b[0] for b in action_buttons)
+    y_min = min(b[1] for b in action_buttons)
+    x_max = max(b[0] + b[2] for b in action_buttons)
+    y_max = max(b[1] + b[3] for b in action_buttons)
 
-    mbx, mby, mbw, mbh, _ = mid_btn
-    gx = search_x1 + mbx
-    gy = search_y1 + mby
+    gx = search_x1 + x_min
+    gy = search_y1 + y_min
+    gw = x_max - x_min
+    gh = y_max - y_min
 
-    btn_crop = img[gy : gy + mbh, gx : gx + mbw]
+    btn_crop = img[gy : gy + gh, gx : gx + gw]
     gray = cv2.cvtColor(btn_crop, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
 
@@ -253,8 +270,8 @@ def detect_turn_and_bet_to_call(
         print("DETECÇÃO DE TURNO DO HERO E APOSTA (OCR) - Poker Analytics")
         print("=" * 70)
         print(f"Botões de ação ativos detectados: {len(action_buttons)}")
-        print(f"Coordenadas do Botão Central: top={gy}, left={gx}, width={mbw}, height={mbh}")
-        print(f"Texto extraído do botão central: {repr(raw_text.strip())}")
+        print(f"Coordenadas do bloco de botões: top={gy}, left={gx}, width={gw}, height={gh}")
+        print(f"Texto extraído do bloco: {repr(raw_text.strip())}")
         print(f"Decisão/Status interpretado: {result}")
         print("=" * 70 + "\n")
 
