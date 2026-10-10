@@ -188,19 +188,28 @@ def calculate_equity(
     t_start = time.time()
 
     # Create combos for each opponent
-    if isinstance(opp_range_percent, float):
-        ranges = [opp_range_percent] * num_opponents
+    opp_models_data = []
+    
+    # Check if opp_range_percent is an OpponentModel
+    from src.engine.range_model import OpponentModel
+    if isinstance(opp_range_percent, OpponentModel):
+        c, w = opp_range_percent.get_weighted_combos(dead_cards)
+        opp_models_data = [(c, w)] * num_opponents
     else:
-        ranges = opp_range_percent[:num_opponents]
-        while len(ranges) < num_opponents:
-            ranges.append(1.0)  # pad with 100% if not enough provided
-
-    opp_combos_list = []
-    for r in ranges:
-        if r < 1.0:
-            opp_combos_list.append(get_opponent_range(FULL_DECK, dead_cards, r))
+        # Fallback to old behavior
+        if isinstance(opp_range_percent, float):
+            ranges = [opp_range_percent] * num_opponents
         else:
-            opp_combos_list.append([])  # empty means 100% random
+            ranges = opp_range_percent[:num_opponents]
+            while len(ranges) < num_opponents:
+                ranges.append(1.0)
+                
+        for r in ranges:
+            if r < 1.0:
+                c = get_opponent_range(FULL_DECK, dead_cards, r)
+                opp_models_data.append((c, [1.0]*len(c)))
+            else:
+                opp_models_data.append(([], []))
 
     for _ in range(iterations):
         drawn_board = random.sample(available_deck, cards_needed_board)
@@ -213,17 +222,16 @@ def calculate_equity(
 
         used_cards = set(drawn_board)
         for i in range(num_opponents):
-            combos = opp_combos_list[i]
+            combos, weights = opp_models_data[i]
             if combos:
-                # Select from specific range
+                # Select from specific range using weights
                 for _ in range(10): # retry limit for collisions
-                    opp_cards = random.choice(combos)
+                    opp_cards = random.choices(combos, weights=weights, k=1)[0]
                     if opp_cards[0] not in used_cards and opp_cards[1] not in used_cards:
                         used_cards.add(opp_cards[0])
                         used_cards.add(opp_cards[1])
                         break
                 else:
-                    # fallback to random if collision limit reached
                     avail_opp = [c for c in available_deck if c not in used_cards]
                     opp_cards = tuple(random.sample(avail_opp, 2))
                     used_cards.add(opp_cards[0])
