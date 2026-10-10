@@ -98,7 +98,10 @@ class GameTreeBuilder:
         return root
 
     def _get_valid_actions(self, node: GameNode, current_depth: int) -> List[str]:
-        actions = [ACTION_FOLD, ACTION_CALL]
+        if node.bet_to_call == 0:
+            actions = [ACTION_CALL]  # Atua como CHECK
+        else:
+            actions = [ACTION_FOLD, ACTION_CALL]
         
         if current_depth < self.max_depth_per_street:
             player_stack = node.hero_stack if node.player == 0 else node.villain_stack

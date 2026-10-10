@@ -30,8 +30,9 @@ class CFRSolver:
 
     def compute_utility(self, node: GameNode, equity: float, initial_hero_stack: float) -> float:
         """
-        Calcula a Função de Utilidade Completa no nó terminal a partir da perspectiva do Hero.
-        Utility = Expected_Final_Chips - Initial_Chips + Heuristics
+        Calcula a Função de Utilidade no nó terminal (Showdown) a partir da perspectiva do Hero.
+        Utility = Expected_Final_Chips - Initial_Chips + Positional_Value
+        Aqui não consideramos "fold equity artificial", pois o fold deve emergir das decisões na árvore.
         """
         p_win = equity / 100.0
         p_lose = 1.0 - p_win
@@ -39,25 +40,13 @@ class CFRSolver:
         # Expected Final Chips do Hero
         expected_final_chips = (p_win * (node.hero_stack + node.pot_size)) + (p_lose * node.hero_stack)
         
-        # Lucro líquido esperado (Chip EV real)
+        # Lucro líquido esperado (Chip EV puro)
         chip_ev = expected_final_chips - initial_hero_stack
         
-        # Fold Equity (Heurística baseada no histórico de agressão)
-        fold_equity = 0.0
-        if not node.is_terminal() or "FOLD" not in node.history:
-            if "ALL_IN" in node.history:
-                fold_equity = node.pot_size * 0.40
-            elif "BET_100" in node.history:
-                fold_equity = node.pot_size * 0.30
-            elif "BET_50" in node.history:
-                fold_equity = node.pot_size * 0.15
-            elif "BET_25" in node.history:
-                fold_equity = node.pot_size * 0.05
-                
-        # Positional Value (Hero geralmente atua depois = vantagem)
+        # Positional Value (Hero geralmente atua depois = vantagem tática no longo prazo)
         positional_value = node.pot_size * 0.05
         
-        utility = chip_ev + fold_equity + positional_value
+        utility = chip_ev + positional_value
         return utility
 
     def run_cfr(self, node: GameNode, hero_cards: List[str], equity: float, p0: float, p1: float, initial_hero_stack: float) -> float:

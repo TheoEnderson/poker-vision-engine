@@ -177,7 +177,7 @@ def make_decision(
             recommended_amount = 0.0
             
             if chosen_action == "FOLD":
-                action = "FOLD"
+                action = "FOLD" if bet_to_call > 0 else "CHECK"
             elif chosen_action == "CALL":
                 action = "CALL" if bet_to_call > 0 else "CHECK"
                 recommended_amount = bet_to_call
@@ -186,11 +186,24 @@ def make_decision(
                 action = "RAISE" if bet_to_call > 0 else "BET"
                 recommended_amount = min(hero_stack, round(pot_size * pct, 1))
             elif chosen_action == "ALL_IN":
-                action = "ALL-IN"
+                    action = "ALL-IN"
                 recommended_amount = hero_stack
                 
-            strat_str = ", ".join([f"{a}:{p:.2f}" for a, p in strategy.items() if p > 0.01])
-            reason = f"Blueprint Strategy (Tier {tier}) [{strat_str}] -> Escolhido: {chosen_action}"
+            # Traduz chaves da estratégia para strings reais no painel
+            display_strategy = {}
+            for a, p in strategy.items():
+                disp_a = a
+                if a == "FOLD": disp_a = "FOLD" if bet_to_call > 0 else "CHECK"
+                elif a == "CALL": disp_a = "CALL" if bet_to_call > 0 else "CHECK"
+                elif a.startswith("BET_"): disp_a = "RAISE" if bet_to_call > 0 else "BET"
+                elif a == "ALL_IN": disp_a = "ALL-IN"
+                display_strategy[disp_a] = display_strategy.get(disp_a, 0.0) + p
+
+            strat_str = ", ".join([f"{a}:{p:.2f}" for a, p in display_strategy.items() if p > 0.01])
+            reason = f"Blueprint Strategy (Tier {tier}) [{strat_str}] -> Escolhido: {action}"
+            
+            if action == "FOLD" and ev > 0 and bet_to_call > 0:
+                reason = f"EV marginal ({ev:+.1f}), mas Blueprint (Tier {tier}) indica FOLD por alta variância/rake. [{strat_str}]"
             
             return {
                 "action": action,
@@ -223,12 +236,12 @@ def make_decision(
             )
             
             # Constrói a árvore de sub-jogo
-            builder = GameTreeBuilder(max_depth_per_street=2)
+            builder = GameTreeBuilder(max_depth_per_street=1)
             root_node = builder.build_tree(root_node)
             
             if hero_cards:
                 solver = CFRSolver()
-                cfr_strategy = solver.solve(root_node, hero_cards, equity, iterations=150)
+                cfr_strategy = solver.solve(root_node, hero_cards, equity, iterations=30)
                 
                 if cfr_strategy:
                     actions = list(cfr_strategy.keys())
@@ -239,7 +252,7 @@ def make_decision(
                     recommended_amount = 0.0
                     
                     if chosen_action == "FOLD":
-                        action = "FOLD"
+                        action = "FOLD" if bet_to_call > 0 else "CHECK"
                     elif chosen_action == "CALL":
                         action = "CALL" if bet_to_call > 0 else "CHECK"
                         recommended_amount = bet_to_call
@@ -251,8 +264,20 @@ def make_decision(
                         action = "ALL-IN"
                         recommended_amount = hero_stack
                         
-                    strat_str = ", ".join([f"{a}:{p:.2f}" for a, p in cfr_strategy.items() if p > 0.01])
-                    reason = f"CFR+ Subgame Solver [{strat_str}] -> Escolhido: {chosen_action}"
+                    # Traduz chaves da estratégia para strings reais no painel
+                    display_strategy = {}
+                    for a, p in cfr_strategy.items():
+                        disp_a = a
+                        if a == "FOLD": disp_a = "FOLD" if bet_to_call > 0 else "CHECK"
+                        elif a == "CALL": disp_a = "CALL" if bet_to_call > 0 else "CHECK"
+                        elif a.startswith("BET_"): disp_a = "RAISE" if bet_to_call > 0 else "BET"
+                        elif a == "ALL_IN": disp_a = "ALL-IN"
+                        
+                        # Soma probabilidades se colidirem (ex: FOLD->CHECK e CALL->CHECK)
+                        display_strategy[disp_a] = display_strategy.get(disp_a, 0.0) + p
+
+                    strat_str = ", ".join([f"{a}:{p:.2f}" for a, p in display_strategy.items() if p > 0.01])
+                    reason = f"CFR+ Subgame Solver [{strat_str}] -> Escolhido: {action}"
                     
                     return {
                         "action": action,

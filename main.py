@@ -124,8 +124,16 @@ class PokerAnalyticsApp:
 
             # Iron Lock Estrito: preserva a mão sólida até o fim da rodada
             if has_valid_detected and not already_has_valid_hand:
-                self.hero_cards = hero_detected
+                if getattr(self, 'last_detected_hero', None) == hero_detected:
+                    self.hero_cards_stable_frames = getattr(self, 'hero_cards_stable_frames', 0) + 1
+                else:
+                    self.hero_cards_stable_frames = 1
+                    self.last_detected_hero = hero_detected
+                    
+                if self.hero_cards_stable_frames >= 2:
+                    self.hero_cards = hero_detected
             elif not already_has_valid_hand:
+                self.hero_cards_stable_frames = 0
                 self.hero_cards = []
 
         # 2. Leitura numérica do pote via OCR
@@ -179,23 +187,28 @@ class PokerAnalyticsApp:
             if current_state == HandState.WAITING_HAND:
                 self.hero_cards = []
                 self.opponent_model.reset()
+                self.last_analysis = None
             elif current_state == HandState.PRE_FLOP and prev_state not in (HandState.PRE_FLOP, HandState.WAITING_HAND):
                 self.hero_cards = []
                 self.opponent_model.reset()
+                self.last_analysis = None
             elif len(current_board) == 0 and len(self.last_board) > 0:
                 self.hero_cards = []
                 self.opponent_model.reset()
+                self.last_analysis = None
 
         # 2. Otimização de Performance: Verifica se houve alteração na mesa
         last_pot = self.last_analysis.get("pot_size") if self.last_analysis else None
         last_bet = self.last_analysis.get("bet_to_call") if self.last_analysis else None
         last_hero = self.last_analysis.get("hero_cards") if self.last_analysis else None
+        last_pos = self.last_analysis.get("hero_position") if self.last_analysis else None
         has_changed = (
             (current_board != self.last_board)
             or (current_state != self.last_state)
             or (pot_size != last_pot)
             or (bet_to_call != last_bet)
             or (self.hero_cards != last_hero)
+            or (self.hero_position != last_pos)
         )
 
         hero_is_missing = (
@@ -308,13 +321,14 @@ class PokerAnalyticsApp:
                 "state": current_state.value,
                 "board": current_board,
                 "hero_cards": self.hero_cards,
+                "hero_position": self.hero_position,
                 "hero_hand": hero_hand_desc,
                 "pot_size": pot_size,
                 "bet_to_call": bet_to_call,
                 "hero_stack": self.hero_stack,
                 "pot_odds": decision["pot_odds"],
                 "equity": decision["equity"],
-                "opp_range_percent": opp_range,
+                "opp_range_percent": "Bayesiano Dinâmico",
                 "p_win": p_win,
                 "p_tie": p_tie,
                 "p_lose": p_lose,
@@ -332,6 +346,7 @@ class PokerAnalyticsApp:
                 "state": current_state.value,
                 "board": current_board,
                 "hero_cards": self.hero_cards,
+                "hero_position": self.hero_position,
                 "hero_hand": "Aguardando cartas suficientes",
                 "pot_size": pot_size,
                 "bet_to_call": bet_to_call,
@@ -419,7 +434,8 @@ class PokerAnalyticsApp:
             f"• Pot Odds Exigidas:     {a['pot_odds']:8.2f}%"
         )
         print(f"╠{sep_double}╣")
-        range_str = "100% Aleatório" if a.get('opp_range_percent', 1.0) == 1.0 else f"Top {int(a.get('opp_range_percent', 1.0)*100)}% Range"
+        range_val = a.get('opp_range_percent', 1.0)
+        range_str = range_val if isinstance(range_val, str) else ("100% Aleatório" if range_val == 1.0 else f"Top {int(range_val*100)}% Range")
         print(f"║ {C_BOLD}PROBABILIDADES (MONTE CARLO - {self.iterations:,} iterações vs {range_str}):{C_RESET}")
         print(
             f"║   • Taxa de Vitória (P_win): {a['p_win']:6.2f}%  │ "
@@ -431,7 +447,7 @@ class PokerAnalyticsApp:
         )
         print(f"╠{sep_double}╣")
         print(f"║ {C_BOLD}ANÁLISE DE RISCO & VALOR ESPERADO (EV):{C_RESET}")
-        print(f"║   • Expectativa Matemática (EV): {ev_color}{ev_val:+8.2f} fichas{C_RESET}")
+        print(f"║   • EV de Call/Check (Base): {ev_color}{ev_val:+8.2f} fichas{C_RESET}")
         print("║")
         print(f"║   >>> DECISÃO RECOMENDADA: {action_color}[ {a['action']} ]{C_RESET} ")
         if a["recommended_amount"] > 0:
@@ -479,6 +495,7 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                         print("[INFO] Cartas do Hero sumiram da tela. Mão encerrada ou foldada. Limpando a trava.")
                         app.hero_cards = []
                         app.state_machine.reset_hand()
+                        app.last_analysis = None
             else:
                 app.hero_absence_frames = 0
 
@@ -525,6 +542,7 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                         app.hero_cards = hero_detected
                         app.hero_cards_changed_frames = 0
                         app.state_machine.reset_hand()
+                        app.last_analysis = None
                 else:
                     app.hero_cards_changed_frames = 0
             else:
@@ -532,8 +550,16 @@ def run_live(poll_interval: float = POLL_INTERVAL):
 
             # Iron Lock Estrito: Só atualiza se ainda não tivermos uma mão sólida
             if has_valid_detected and not already_has_valid_hand:
-                app.hero_cards = hero_detected
+                if getattr(app, 'last_detected_hero', None) == hero_detected:
+                    app.hero_cards_stable_frames = getattr(app, 'hero_cards_stable_frames', 0) + 1
+                else:
+                    app.hero_cards_stable_frames = 1
+                    app.last_detected_hero = hero_detected
+                    
+                if app.hero_cards_stable_frames >= 2:
+                    app.hero_cards = hero_detected
             elif not already_has_valid_hand:
+                app.hero_cards_stable_frames = 0
                 app.hero_cards = []
 
             detected_cards = detect_board(frame, verbose=False)
@@ -553,6 +579,8 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 print(f"[INFO] Pote caiu de {last_pot} para {pot_size}. Nova rodada! Limpando Hero Cards.")
                 app.hero_cards = []
                 already_has_valid_hand = False
+                app.last_analysis = None
+                app.state_machine.reset_hand()
 
             app.hero_stack = extract_hero_stack(frame, last_stack=app.hero_stack)
             bet_to_call = turn_info["bet_to_call"]
