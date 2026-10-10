@@ -166,68 +166,108 @@ def make_decision(
         if score_cards[0] >= 1: # Pelo menos um par
             has_pair_or_better = True
             
-    # Issue #7 e #8: Árvore de Decisão e Motor CFR+ (V3/V4)
-    try:
-        from src.engine.game_tree import GameNode, GameTreeBuilder
-        from src.engine.cfr_solver import CFRSolver
-        import random
-        
-        root_node = GameNode(
-            player=0,
-            pot_size=pot_size,
-            hero_stack=hero_stack,
-            villain_stack=hero_stack, # Assumindo stack efetivo espelhado temporariamente
-            board_cards=board_cards if board_cards else [],
-            current_street=state,
-            bet_to_call=bet_to_call
-        )
-        
-        # Constrói a árvore de sub-jogo limitando a profundidade para performance
-        builder = GameTreeBuilder(max_depth_per_street=2)
-        root_node = builder.build_tree(root_node)
-        
-        if hero_cards:
-            solver = CFRSolver()
-            cfr_strategy = solver.solve(root_node, hero_cards, equity, iterations=100)
+    # Issue #9: Blueprint Strategy (Camada 1) e Subgame Solving (Camada 2)
+    if state == "PRE_FLOP":
+        try:
+            from src.engine.blueprint import PreflopBlueprint
+            strategy = PreflopBlueprint.get_strategy(tier, bet_to_call, spr)
+            chosen_action = PreflopBlueprint.sample_action(strategy)
             
-            if cfr_strategy:
-                actions = list(cfr_strategy.keys())
-                probs = list(cfr_strategy.values())
-                chosen_action = random.choices(actions, weights=probs, k=1)[0]
-                
+            action = "FOLD"
+            recommended_amount = 0.0
+            
+            if chosen_action == "FOLD":
                 action = "FOLD"
-                recommended_amount = 0.0
+            elif chosen_action == "CALL":
+                action = "CALL" if bet_to_call > 0 else "CHECK"
+                recommended_amount = bet_to_call
+            elif chosen_action.startswith("BET_"):
+                pct = float(chosen_action.split("_")[1]) / 100.0
+                action = "RAISE" if bet_to_call > 0 else "BET"
+                recommended_amount = min(hero_stack, round(pot_size * pct, 1))
+            elif chosen_action == "ALL_IN":
+                action = "ALL-IN"
+                recommended_amount = hero_stack
                 
-                if chosen_action == "FOLD":
-                    action = "FOLD"
-                elif chosen_action == "CALL":
-                    action = "CALL" if bet_to_call > 0 else "CHECK"
-                    recommended_amount = bet_to_call
-                elif chosen_action.startswith("BET_"):
-                    pct = float(chosen_action.split("_")[1]) / 100.0
-                    action = "RAISE" if bet_to_call > 0 else "BET"
-                    recommended_amount = min(hero_stack, round(pot_size * pct, 1))
-                elif chosen_action == "ALL_IN":
-                    action = "ALL-IN"
-                    recommended_amount = hero_stack
+            strat_str = ", ".join([f"{a}:{p:.2f}" for a, p in strategy.items() if p > 0.01])
+            reason = f"Blueprint Strategy (Tier {tier}) [{strat_str}] -> Escolhido: {chosen_action}"
+            
+            return {
+                "action": action,
+                "ev": ev,
+                "pot_odds": pot_odds,
+                "equity": equity,
+                "bet_to_call": bet_to_call,
+                "pot_size": pot_size,
+                "recommended_amount": recommended_amount,
+                "reason": reason,
+                "cfr_strategy": strategy
+            }
+        except ImportError:
+            pass
+    else:
+        # PÓS-FLOP: Subgame Solving com CFR+ (Camada 2)
+        try:
+            from src.engine.game_tree import GameNode, GameTreeBuilder
+            from src.engine.cfr_solver import CFRSolver
+            import random
+            
+            root_node = GameNode(
+                player=0,
+                pot_size=pot_size,
+                hero_stack=hero_stack,
+                villain_stack=hero_stack, # Assumindo stack efetivo espelhado temporariamente
+                board_cards=board_cards if board_cards else [],
+                current_street=state,
+                bet_to_call=bet_to_call
+            )
+            
+            # Constrói a árvore de sub-jogo
+            builder = GameTreeBuilder(max_depth_per_street=2)
+            root_node = builder.build_tree(root_node)
+            
+            if hero_cards:
+                solver = CFRSolver()
+                cfr_strategy = solver.solve(root_node, hero_cards, equity, iterations=150)
+                
+                if cfr_strategy:
+                    actions = list(cfr_strategy.keys())
+                    probs = list(cfr_strategy.values())
+                    chosen_action = random.choices(actions, weights=probs, k=1)[0]
                     
-                # Formata a string de estratégia para o log
-                strat_str = ", ".join([f"{a}:{p:.2f}" for a, p in cfr_strategy.items() if p > 0.01])
-                reason = f"CFR+ Strategy [{strat_str}] -> Escolhido: {chosen_action}"
-                
-                return {
-                    "action": action,
-                    "ev": ev,
-                    "pot_odds": pot_odds,
-                    "equity": equity,
-                    "bet_to_call": bet_to_call,
-                    "pot_size": pot_size,
-                    "recommended_amount": recommended_amount,
-                    "reason": reason,
-                    "cfr_strategy": cfr_strategy
-                }
-    except Exception as e:
-        print(f"CFR Solver falhou, caindo para heurística: {e}")
+                    action = "FOLD"
+                    recommended_amount = 0.0
+                    
+                    if chosen_action == "FOLD":
+                        action = "FOLD"
+                    elif chosen_action == "CALL":
+                        action = "CALL" if bet_to_call > 0 else "CHECK"
+                        recommended_amount = bet_to_call
+                    elif chosen_action.startswith("BET_"):
+                        pct = float(chosen_action.split("_")[1]) / 100.0
+                        action = "RAISE" if bet_to_call > 0 else "BET"
+                        recommended_amount = min(hero_stack, round(pot_size * pct, 1))
+                    elif chosen_action == "ALL_IN":
+                        action = "ALL-IN"
+                        recommended_amount = hero_stack
+                        
+                    strat_str = ", ".join([f"{a}:{p:.2f}" for a, p in cfr_strategy.items() if p > 0.01])
+                    reason = f"CFR+ Subgame Solver [{strat_str}] -> Escolhido: {chosen_action}"
+                    
+                    return {
+                        "action": action,
+                        "ev": ev,
+                        "pot_odds": pot_odds,
+                        "equity": equity,
+                        "bet_to_call": bet_to_call,
+                        "pot_size": pot_size,
+                        "recommended_amount": recommended_amount,
+                        "reason": reason,
+                        "cfr_strategy": cfr_strategy
+                    }
+        except Exception as e:
+            print(f"CFR Solver falhou, caindo para heurística: {e}")
+            
             
     # Camada 2: Cálculo do Score Multidimensional (Confiança/Estratégia) Fallback
     decision_score = calculate_decision_score(
