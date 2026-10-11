@@ -410,11 +410,14 @@ def find_and_detect_hero_cards(
     image_path_or_frame: Union[str, Path, np.ndarray] = "mesa_6.png",
     board_coords: Optional[Dict[str, int]] = None,
     threshold: float = DEFAULT_RANK_THRESHOLD,
-    verbose: bool = True
-) -> List[str]:
+    verbose: bool = True,
+    hero_coords_hint: Optional[Dict[str, int]] = None,
+    return_coords: bool = False
+) -> Union[List[str], Tuple[List[str], Optional[Dict[str, int]]]]:
     """
     Localiza dinamicamente as duas cartas abertas do Hero em qualquer posição da mesa
     (6-max ou 9-max), ignorando as cartas comunitárias do board.
+    Se hero_coords_hint for fornecido, foca no assento do Hero e ignora cartas de oponentes no Showdown.
     """
     if board_coords is None:
         board_coords = {"top": 415, "left": 734, "width": 449, "height": 109}
@@ -512,10 +515,24 @@ def find_and_detect_hero_cards(
                     hh = max(c1[1] + c1[3], c2[1] + c2[3]) - hy
                     candidate_boxes.append((hx, hy, hw, hh))
 
+    if hero_coords_hint:
+        hl = hero_coords_hint.get("left", 0)
+        ht = hero_coords_hint.get("top", 0)
+        # Prioriza e filtra candidatos próximos ao assento do Hero (< 250px),
+        # impedindo que cartas de oponentes expostas no Showdown sejam confundidas com as do Hero
+        close_boxes = [b for b in candidate_boxes if ((b[0] - hl) ** 2 + (b[1] - ht) ** 2) <= (250 ** 2)]
+        if close_boxes:
+            close_boxes.sort(key=lambda b: (b[0] - hl) ** 2 + (b[1] - ht) ** 2)
+            candidate_boxes = close_boxes
+        else:
+            if verbose:
+                print("[INFO] Nenhuma carta aberta detectada no assento conhecido do Hero.")
+            return ([], None) if return_coords else []
+
     if not candidate_boxes:
         if verbose:
             print("[INFO] Nenhuma carta aberta do Hero detectada fora do board (Fold ou mesa vazia).")
-        return []
+        return ([], None) if return_coords else []
 
     best_cards = []
     best_box = None
@@ -546,7 +563,7 @@ def find_and_detect_hero_cards(
                 save_unknown_card(slot2, prefix="hero_slot_2", verbose=verbose)
             if verbose:
                 print(f"[INFO] Cartas do Hero não reconhecidas com confiança suficiente: [{c1_str}, {c2_str}]. Retornando [].")
-        return []
+        return ([], None) if return_coords else []
 
     hero_coords_dict = {"top": int(best_box[1]), "left": int(best_box[0]), "width": int(best_box[2]), "height": int(best_box[3])}
     hero_cards = best_cards
@@ -564,6 +581,8 @@ def find_and_detect_hero_cards(
         print(f"Cartas do Hero identificadas: {hero_cards}")
         print("=" * 70 + "\n")
 
+    if return_coords:
+        return hero_cards, hero_coords_dict
     return hero_cards
 
 

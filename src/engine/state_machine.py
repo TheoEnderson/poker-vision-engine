@@ -61,19 +61,26 @@ class PokerHandStateMachine:
             if card and card.lower() not in ("vazio", "desconhecida", "none", "--")
         ]
 
-    def _is_transition_allowed(self, from_state: HandState, to_state: HandState, num_cards: int) -> bool:
+    def _is_transition_allowed(
+        self, from_state: HandState, to_state: HandState, num_cards: int, has_hero_cards: bool = False
+    ) -> bool:
         if from_state == to_state:
             return True
 
-        if not self._initial_synced and self.allow_initial_sync and from_state == HandState.WAITING_HAND:
-            if to_state in (HandState.PRE_FLOP, HandState.FLOP, HandState.TURN, HandState.RIVER):
+        if from_state == HandState.WAITING_HAND:
+            # 1. Mesa limpa (0 cartas) -> nova mão em PRE_FLOP
+            if to_state in (HandState.WAITING_HAND, HandState.PRE_FLOP) and num_cards == 0:
                 return True
+            # 2. Hero possui cartas em mãos -> permitir sincronização com o estágio real da mesa
+            if has_hero_cards and to_state in (HandState.PRE_FLOP, HandState.FLOP, HandState.TURN, HandState.RIVER):
+                return True
+            # 3. Sincronização inicial permitida no arranque
+            if not self._initial_synced and self.allow_initial_sync and to_state in (HandState.PRE_FLOP, HandState.FLOP, HandState.TURN, HandState.RIVER):
+                return True
+            return False
 
         if to_state in (HandState.WAITING_HAND, HandState.PRE_FLOP) and num_cards == 0:
             return True
-
-        if from_state == HandState.WAITING_HAND and to_state == HandState.PRE_FLOP:
-            return num_cards == 0
 
         if from_state == HandState.PRE_FLOP and to_state == HandState.FLOP:
             return num_cards == 3
@@ -89,7 +96,7 @@ class PokerHandStateMachine:
 
         return False
 
-    def update_board(self, detected_cards: List[str]) -> bool:
+    def update_board(self, detected_cards: List[str], has_hero_cards: bool = False) -> bool:
         valid_cards = self.filter_valid_cards(detected_cards)
         num_cards = len(valid_cards)
 
@@ -111,7 +118,7 @@ class PokerHandStateMachine:
         if target_state == self.current_state and valid_cards == self.board:
             return True
 
-        if not self._is_transition_allowed(self.current_state, target_state, num_cards):
+        if not self._is_transition_allowed(self.current_state, target_state, num_cards, has_hero_cards=has_hero_cards):
             if self.current_state == HandState.WAITING_HAND and target_state in (HandState.FLOP, HandState.TURN, HandState.RIVER):
                 pass # Bot está apenas aguardando a mão atual (onde ele foldou) terminar na tela
             else:

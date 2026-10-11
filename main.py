@@ -46,6 +46,13 @@ from src.vision import (
     grab_screen,
 )
 
+C_RESET = "\033[0m"
+C_BOLD = "\033[1m"
+C_CYAN = "\033[96m"
+C_GREEN = "\033[92m"
+C_YELLOW = "\033[93m"
+C_RED = "\033[91m"
+
 
 class PokerAnalyticsApp:
     """
@@ -180,14 +187,26 @@ class PokerAnalyticsApp:
 
         # 1. Atualiza a Máquina de Estados Finitos (FSM)
         prev_state = self.last_state
-        self.state_machine.update_board(detected_cards)
+        has_valid_hero = (
+            isinstance(self.hero_cards, list)
+            and len(self.hero_cards) == 2
+            and all(
+                isinstance(c, str)
+                and len(c) >= 2
+                and c.lower() not in ("desconhecida", "vazio", "none", "--")
+                for c in self.hero_cards
+            )
+        )
+        self.state_machine.update_board(detected_cards, has_hero_cards=has_valid_hero)
         current_state = self.state_machine.current_state
         current_board = self.state_machine.board
 
         # Destrancamento Seguro entre Rodadas
         if self.auto_detect_hero:
             if current_state == HandState.WAITING_HAND:
-                self.hero_cards = []
+                if not getattr(self, '_new_hand_hero_cards_set', False):
+                    self.hero_cards = []
+                self._new_hand_hero_cards_set = False
                 self.opponent_model.reset()
                 self.last_analysis = None
                 self.hero_position = "Desconhecida"
@@ -247,7 +266,7 @@ class PokerAnalyticsApp:
             )
         )
 
-        if not has_valid_hero:
+        if not has_valid_hero or current_state == HandState.WAITING_HAND:
             analysis = {
                 "state": current_state.value,
                 "board": current_board,
@@ -270,7 +289,8 @@ class PokerAnalyticsApp:
             }
             self.last_analysis = analysis
             if show_dashboard:
-                self.render_dashboard(analysis, cached=False)
+                sys.stdout.write(f"\r{C_YELLOW}[AGUARDANDO CARTAS DO HERO / INÍCIO DA PRÓXIMA MÃO...]{C_RESET}   ")
+                sys.stdout.flush()
             return analysis
 
         is_evaluable = (
@@ -503,7 +523,15 @@ def run_live(poll_interval: float = POLL_INTERVAL):
     try:
         while True:
             frame = grab_screen()
-            hero_detected = find_and_detect_hero_cards(frame, verbose=False)
+            hero_res = find_and_detect_hero_cards(
+                frame,
+                verbose=False,
+                hero_coords_hint=getattr(app, 'hero_coords', None),
+                return_coords=True
+            )
+            hero_detected, detected_box = hero_res
+            if detected_box is not None:
+                app.hero_coords = detected_box
 
             has_valid_detected = (
                 isinstance(hero_detected, list)
@@ -534,12 +562,16 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                         app.state_machine.reset_hand()
                         app.last_analysis = None
                         app.hero_position = "Desconhecida"
+                if app.hero_absence_frames >= 25 and not already_has_valid_hand:
+                    app.hero_coords = None
             else:
                 app.hero_absence_frames = 0
 
             # DETECÇÃO DE MUDANÇA DE CARTAS (Novo Pre-Flop Imediato):
             if has_valid_detected and already_has_valid_hand and hero_detected != app.hero_cards:
-                if len(app.state_machine.board) == 0:
+                detected_board_now = detect_board(frame, verbose=False)
+                physical_board = PokerHandStateMachine.filter_valid_cards(detected_board_now)
+                if len(app.state_machine.board) == 0 and len(physical_board) == 0:
                     app.hero_cards_changed_frames = getattr(app, 'hero_cards_changed_frames', 0) + 1
                     if app.hero_cards_changed_frames >= 2:
                         print(f"\n[INFO] Cartas do Hero mudaram de {app.hero_cards} para {hero_detected}. Nova rodada detectada!")
@@ -547,6 +579,7 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                         app._new_hand_hero_cards_set = True
                         app.hero_cards_changed_frames = 0
                         app.state_machine.reset_hand()
+                        app.state_machine.update_board([], has_hero_cards=True)
                         app.last_analysis = None
                         app.hero_position = "Desconhecida"
                 else:
@@ -562,6 +595,13 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 app.hero_cards_stable_frames = 1
                 app._new_hand_hero_cards_set = True
                 already_has_valid_hand = True
+
+            # Se a máquina está em WAITING_HAND e não há cartas válidas, mantém status limpo aguardando próxima mão
+            if app.state_machine.current_state == HandState.WAITING_HAND and not already_has_valid_hand:
+                sys.stdout.write(f"\r{C_YELLOW}[AGUARDANDO INÍCIO DA PRÓXIMA MÃO...]{C_RESET}   ")
+                sys.stdout.flush()
+                time.sleep(poll_interval)
+                continue
 
             turn_info = detect_turn_and_bet_to_call(frame, verbose=False)
 
