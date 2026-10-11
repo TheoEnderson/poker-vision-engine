@@ -230,6 +230,8 @@ class PokerAnalyticsApp:
         last_bet = self.last_analysis.get("bet_to_call") if self.last_analysis else None
         last_hero = self.last_analysis.get("hero_cards") if self.last_analysis else None
         last_pos = self.last_analysis.get("hero_position") if self.last_analysis else None
+        last_stack = self.last_analysis.get("hero_stack") if self.last_analysis else None
+        last_num_opponents = self.last_analysis.get("num_opponents") if self.last_analysis else None
         has_changed = (
             (current_board != self.last_board)
             or (current_state != self.last_state)
@@ -237,6 +239,8 @@ class PokerAnalyticsApp:
             or (bet_to_call != last_bet)
             or (self.hero_cards != last_hero)
             or (self.hero_position != last_pos)
+            or (self.hero_stack != last_stack)
+            or (self.num_opponents != last_num_opponents)
         )
 
         hero_is_missing = (
@@ -271,10 +275,12 @@ class PokerAnalyticsApp:
                 "state": current_state.value,
                 "board": current_board,
                 "hero_cards": [],
+                "hero_position": self.hero_position,
                 "hero_hand": "Não identificadas",
                 "pot_size": pot_size,
                 "bet_to_call": bet_to_call,
                 "hero_stack": self.hero_stack,
+                "num_opponents": self.num_opponents,
                 "pot_odds": 0.0,
                 "equity": 0.0,
                 "p_win": 0.0,
@@ -355,6 +361,7 @@ class PokerAnalyticsApp:
                 "pot_size": pot_size,
                 "bet_to_call": bet_to_call,
                 "hero_stack": self.hero_stack,
+                "num_opponents": self.num_opponents,
                 "pot_odds": decision["pot_odds"],
                 "equity": decision["equity"],
                 "opp_range_percent": "Bayesiano Dinâmico",
@@ -380,6 +387,7 @@ class PokerAnalyticsApp:
                 "pot_size": pot_size,
                 "bet_to_call": bet_to_call,
                 "hero_stack": self.hero_stack,
+                "num_opponents": self.num_opponents,
                 "pot_odds": 0.0,
                 "equity": 0.0,
                 "p_win": 0.0,
@@ -447,10 +455,11 @@ class PokerAnalyticsApp:
             f"║ {C_BOLD}BOARD ATUAL:{C_RESET}      [{board_display:<22s}] ║ "
             f"{C_BOLD}JOGO ATUAL:{C_RESET}      {a['hero_hand']}"
         )
-        pos_str = getattr(self, "hero_position", "Desconhecida")
+        pos_str = a.get("hero_position", getattr(self, "hero_position", "Desconhecida"))
+        num_opponents = a.get("num_opponents", self.num_opponents)
         print(
             f"║ {C_BOLD}POSIÇÃO HERO:{C_RESET}     {pos_str:<14s} ║ "
-            f"{C_BOLD}OPONENTES:{C_RESET}       {self.num_opponents}"
+            f"{C_BOLD}OPONENTES:{C_RESET}       {num_opponents}"
         )
         print(f"╠{sep_double}╣")
         print(f"║ {C_BOLD}DADOS DA RODADA:{C_RESET}")
