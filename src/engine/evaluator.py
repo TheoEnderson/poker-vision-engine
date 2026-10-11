@@ -165,9 +165,11 @@ def calculate_equity(
     num_opponents: int = 4,
     iterations: int = 10000,
     opp_range_percent: Union[float, List[float]] = 1.0
-) -> Tuple[float, float, float, float, Tuple[int, ...]]:
+) -> Tuple[float, float, float, float, float]:
     """
-    Calcula a probabilidade de Vitória, Empate e Derrota via Simulação de Monte Carlo.
+    Retorna (P_win, P_tie, P_lose, equity, segundos), em percentuais 0–100.
+    As probabilidades são frequências; equity é a participação média no pote:
+    1 na vitória exclusiva, 1/k no empate entre k vencedores e 0 na derrota.
     """
     valid_hero = [c for c in hero_cards if c and c.lower() not in ("desconhecida", "vazio", "none", "--")]
     valid_board = [c for c in board_cards if c and c.lower() not in ("desconhecida", "vazio", "none", "--")]
@@ -185,6 +187,7 @@ def calculate_equity(
     wins = 0
     ties = 0
     losses = 0
+    pot_share = 0.0
     t_start = time.time()
 
     # Create combos for each opponent
@@ -217,7 +220,7 @@ def calculate_equity(
 
         hero_score = evaluate_7_cards(valid_hero + sim_board)
 
-        hero_tied = False
+        tied_opponents = 0
         hero_lost = False
 
         used_cards = set(drawn_board)
@@ -248,21 +251,23 @@ def calculate_equity(
                 hero_lost = True
                 break
             elif opp_score == hero_score:
-                hero_tied = True
+                tied_opponents += 1
 
         if hero_lost:
             losses += 1
-        elif hero_tied:
+        elif tied_opponents:
             ties += 1
+            pot_share += 1.0 / (tied_opponents + 1)
         else:
             wins += 1
+            pot_share += 1.0
 
     elapsed_time = time.time() - t_start
     p_win = (wins / iterations) * 100.0
     p_tie = (ties / iterations) * 100.0
     p_lose = (losses / iterations) * 100.0
 
-    equity = round(p_win + (p_tie / 2.0), 2)
+    equity = round((pot_share / iterations) * 100.0, 2)
     return round(p_win, 2), round(p_tie, 2), round(p_lose, 2), equity, round(elapsed_time, 3)
 
 

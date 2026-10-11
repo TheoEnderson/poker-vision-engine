@@ -5,6 +5,8 @@ Calcula Pot Odds, Valor Esperado (EV), SPR, Textura do Board e emite um Decision
 """
 
 import sys
+import math
+from numbers import Real
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -22,9 +24,52 @@ except ImportError:
 def calculate_pot_odds(bet_to_call: float, pot_size: float) -> float:
     return (bet_to_call / (pot_size + bet_to_call)) * 100.0 if (pot_size + bet_to_call) > 0 else 0.0
 
-def calculate_ev(p_win: float, p_lose: float, p_tie: float, pot_size: float, bet_to_call: float) -> float:
-    # Probabilidades vêm como porcentagem (0-100), dividimos por 100 para a fórmula do EV
-    return ((p_win / 100.0) * pot_size) - ((p_lose / 100.0) * bet_to_call) + ((p_tie / 100.0) * (pot_size / 2.0))
+def _nonnegative_number(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} deve ser um número finito não negativo.")
+    return float(value)
+
+
+def _resolve_equity(p_win, p_lose, p_tie, equity, num_opponents):
+    """Equity explícita é autoritativa; frequências legadas têm limites."""
+    if equity is not None:
+        equity = _nonnegative_number(equity, "equity")
+        if equity > 100:
+            raise ValueError("equity deve estar entre 0 e 100 (percentual).")
+        return equity
+
+    probabilities = [_nonnegative_number(p, name) for p, name in
+                     ((p_win, "P_win / equity"), (p_lose, "P_lose / equity"), (p_tie, "P_tie / equity"))]
+    if any(p > 100 for p in probabilities) or not math.isclose(sum(probabilities), 100, abs_tol=.02):
+        raise ValueError("Frequências devem estar entre 0 e 100 e somar aproximadamente 100; informe equity válida.")
+    if p_tie == 0:
+        return float(p_win)
+    if num_opponents == 1 and not isinstance(num_opponents, bool):
+        return p_win + p_tie / 2.0
+    raise ValueError("Empate sem quantidade conhecida de vencedores: informe equity consolidada ou heads-up explícito (num_opponents=1).")
+
+
+def calculate_ev(
+    p_win: Optional[float] = None, p_lose: Optional[float] = None,
+    p_tie: Optional[float] = None, pot_size: Optional[float] = None,
+    bet_to_call: Optional[float] = None, *, equity: Optional[float] = None,
+    num_opponents: Optional[int] = None
+) -> float:
+    """EV líquido do CALL: (equity/100) * (P + C) - C.
+
+    P é o pote disputável ANTES do call adicional C, incluindo contribuições já
+    feitas. Não subtrair novamente apostas anteriores do Hero. Equity é percentual.
+    Pressupõe um único pote, sem rake nem apostas futuras: não avalia RAISE/ALL-IN.
+    C=0 retorna só a parcela esperada do pote, não o EV estratégico de CHECK.
+    Um call all-in só cabe aqui se C for o custo efetivo e P inteiramente elegível;
+    side pots e stacks insuficientes exigem contexto que esta função não modela.
+    A assinatura posicional legada é aceita sem empates ou com heads-up explícito.
+    """
+    equity = _resolve_equity(p_win, p_lose, p_tie, equity, num_opponents)
+    pot_size = _nonnegative_number(pot_size, "pot_size")
+    bet_to_call = _nonnegative_number(bet_to_call, "bet_to_call")
+    final_pot = _nonnegative_number(pot_size + bet_to_call, "P + C")
+    return (equity / 100.0) * final_pot - bet_to_call
 
 
 
@@ -143,14 +188,23 @@ def make_decision(
     board_cards: Optional[List[str]] = None,
     outs: int = 0,
     draw_name: str = "Nenhum",
-    loose_mode: bool = False
+    loose_mode: bool = False,
+    equity: Optional[float] = None,
+    num_opponents: Optional[int] = None,
+    hero_contribution: Optional[float] = None,
+    villain_contribution: Optional[float] = None,
+    min_raise_increment: Optional[float] = None,
+    villain_stack: Optional[float] = None
 ) -> Dict[str, Any]:
     """
     Motor de Risco Multidimensional. Retorna a decisão (FOLD/CHECK/CALL/RAISE/ALL-IN).
+    Recebe a equity percentual do simulador. Sem esse argumento, empates exigem
+    heads-up explícito; frequências não bastam no multiway. O campo ev é sempre
+    a referência de CALL (ou parcela do pote se C=0), não o EV da ação escolhida.
     """
-    equity = p_win + (p_tie / 2.0)
-    pot_odds = (bet_to_call / (pot_size + bet_to_call)) * 100.0 if (pot_size + bet_to_call) > 0 else 0.0
-    ev = ((p_win / 100.0) * pot_size) - ((p_lose / 100.0) * bet_to_call) + ((p_tie / 100.0) * (pot_size / 2.0))
+    equity = _resolve_equity(p_win, p_lose, p_tie, equity, num_opponents)
+    ev = calculate_ev(pot_size=pot_size, bet_to_call=bet_to_call, equity=equity)
+    pot_odds = calculate_pot_odds(bet_to_call, pot_size)
     
     # Camada 1: Matemática (SPR)
     spr = hero_stack / pot_size if pot_size > 0 else 10.0
@@ -234,15 +288,29 @@ def make_decision(
                 player=0,
                 pot_size=pot_size,
                 hero_stack=hero_stack,
-                villain_stack=hero_stack, # Assumindo stack efetivo espelhado temporariamente
+                villain_stack=hero_stack if villain_stack is None else villain_stack,
                 board_cards=board_cards if board_cards else [],
                 current_street=state,
-                bet_to_call=bet_to_call
+                bet_to_call=bet_to_call,
+                hero_contribution=hero_contribution,
+                villain_contribution=villain_contribution,
+                min_raise_increment=min_raise_increment
             )
             
             # Constrói a árvore de sub-jogo
             builder = GameTreeBuilder(max_depth_per_street=1)
             root_node = builder.build_tree(root_node)
+            if not root_node.children:
+                raise ValueError("Não há sequência de apostas financiável neste contexto.")
+            call_branch = root_node.children.get("CALL")
+            if call_branch and call_branch.action_details.get("uncalled_refund"):
+                if num_opponents not in (None, 1):
+                    raise ValueError("Call parcial multiway exige potes elegíveis não representados pela árvore heads-up.")
+                # Mesma fórmula 4D, com custo efetivo e apenas o pote elegível HU.
+                cost = call_branch.action_details["additional_amount"]
+                eligible_pot = call_branch.pot_size - cost
+                ev = calculate_ev(pot_size=eligible_pot, bet_to_call=cost, equity=equity)
+                pot_odds = calculate_pot_odds(cost, eligible_pot)
             
             if hero_cards:
                 solver = CFRSolver()
@@ -252,40 +320,17 @@ def make_decision(
                     # Seleciona a ação com a maior probabilidade (Argmax) para UX consistente
                     chosen_action = max(cfr_strategy.items(), key=lambda x: x[1])[0]
                     
-                    action = "FOLD"
-                    recommended_amount = 0.0
-                    
-                    if chosen_action == "FOLD":
-                        action = "FOLD" if bet_to_call > 0 else "CHECK"
-                    elif chosen_action == "CALL":
-                        action = "CALL" if bet_to_call > 0 else "CHECK"
-                        recommended_amount = bet_to_call
-                    elif chosen_action.startswith("BET_"):
-                        pct = float(chosen_action.split("_")[1]) / 100.0
-                        if bet_to_call > 0:
-                            action = "RAISE"
-                            base_raise = bet_to_call + round(pot_size * pct, 1)
-                            recommended_amount = min(hero_stack, max(bet_to_call * 2.0, base_raise))
-                        else:
-                            action = "BET"
-                            recommended_amount = min(hero_stack, round(pot_size * pct, 1))
-                    elif chosen_action == "ALL_IN":
-                        action = "ALL-IN"
-                        recommended_amount = hero_stack
-                        
-                    # Traduz chaves da estratégia para strings reais no painel
-                    display_strategy = {}
-                    for a, p in cfr_strategy.items():
-                        disp_a = a
-                        if a == "FOLD": disp_a = "FOLD" if bet_to_call > 0 else "CHECK"
-                        elif a == "CALL": disp_a = "CALL" if bet_to_call > 0 else "CHECK"
-                        elif a.startswith("BET_"): disp_a = "RAISE" if bet_to_call > 0 else "BET"
-                        elif a == "ALL_IN": disp_a = "ALL-IN"
-                        
-                        # Soma probabilidades se colidirem (ex: FOLD->CHECK e CALL->CHECK)
-                        display_strategy[disp_a] = display_strategy.get(disp_a, 0.0) + p
-
-                    strat_str = ", ".join([f"{a}:{p:.2f}" for a, p in display_strategy.items() if p > 0.01])
+                    if any(a not in root_node.children for a in cfr_strategy):
+                        raise ValueError("Solver retornou ação sem ramo financeiro avaliado.")
+                    details = dict(root_node.children[chosen_action].action_details)
+                    action = details["action_type"]
+                    recommended_amount = details["additional_amount"]
+                    # Cada código mantém sua probabilidade e tamanho próprios.
+                    strat_str = ", ".join(
+                        f"{a}:{p:.3f} ({root_node.children[a].action_details['action_type']}, "
+                        f"adicional {root_node.children[a].action_details['additional_amount']:.12g})"
+                        for a, p in cfr_strategy.items() if p > 0
+                    )
                     reason = f"CFR+ Subgame Solver [{strat_str}] -> Escolhido: {action}"
                     
                     return {
@@ -297,8 +342,16 @@ def make_decision(
                         "pot_size": pot_size,
                         "recommended_amount": recommended_amount,
                         "reason": reason,
-                        "cfr_strategy": cfr_strategy
+                        "cfr_strategy": cfr_strategy,
+                        "selected_action": chosen_action,
+                        "selected_action_probability": cfr_strategy[chosen_action],
+                        "action_details": details
                     }
+        except ValueError as e:
+            return dict(action="AGUARDANDO CONTEXTO DA APOSTA", recommended_amount=0.0,
+                        ev=ev, equity=equity, pot_odds=pot_odds, pot_size=pot_size,
+                        bet_to_call=bet_to_call, reason=str(e),
+                        action_details=dict(supported=False, validation_reason=str(e)))
         except Exception as e:
             print(f"CFR Solver falhou, caindo para heurística: {e}")
             
@@ -357,7 +410,7 @@ def make_decision(
                 if hero_stack <= recommended_amount * 1.5:
                     action = "ALL-IN"
                     recommended_amount = hero_stack
-                reason = f"EV positivo ({ev:+.1f}). Raise para extrair valor/proteção (Confiança: {decision_score:.1f})."
+                reason = f"EV do CALL positivo ({ev:+.1f}). Raise para extrair valor/proteção (Confiança: {decision_score:.1f})."
             else:
                 action = "CALL"
                 recommended_amount = bet_to_call

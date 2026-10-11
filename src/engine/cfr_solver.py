@@ -1,17 +1,33 @@
 import random
+import math
 from typing import Dict, List, Any
 from src.engine.game_tree import GameNode, VALID_ACTIONS
 
 class CFRSolver:
     """
     Motor CFR+ (Counterfactual Regret Minimization).
-    Gera Mixed Strategies inexploráveis para subjogos.
+    Calcula estratégias médias para subjogos abstratos.
+    Um orçamento finito de iterações não garante explorabilidade zero.
     """
     def __init__(self):
         # Tabela de Arrependimento Cumulativo: info_set -> {action: regret}
         self.cumulative_regrets: Dict[str, Dict[str, float]] = {}
         # Tabela de Estratégia Cumulativa: info_set -> {action: prob_sum}
         self.cumulative_strategy: Dict[str, Dict[str, float]] = {}
+
+    @staticmethod
+    def _normalize(weights: Dict[str, float]) -> Dict[str, float]:
+        """Normaliza sem arredondar e sem overflow na soma de pesos finitos."""
+        if not weights:
+            return {}
+        if any(not math.isfinite(w) or w < 0 for w in weights.values()):
+            raise ValueError("Pesos da estratégia devem ser finitos e não negativos.")
+        scale = max(weights.values())
+        if scale == 0:
+            return {a: 1.0 / len(weights) for a in weights}
+        scaled = {a: w / scale for a, w in weights.items()}
+        total = math.fsum(scaled.values())
+        return {a: w / total for a, w in scaled.items()}
 
     def get_strategy(self, info_set: str, valid_actions: List[str]) -> Dict[str, float]:
         """Calcula a Mixed Strategy usando Regret Matching."""
@@ -20,34 +36,20 @@ class CFRSolver:
             
         regrets = self.cumulative_regrets[info_set]
         positive_regrets = {a: max(0.0, r) for a, r in regrets.items() if a in valid_actions}
-        sum_positive = sum(positive_regrets.values())
-        
-        if sum_positive > 0:
-            return {a: r / sum_positive for a, r in positive_regrets.items()}
-        else:
-            n = len(valid_actions)
-            return {a: 1.0 / n for a in valid_actions}
+        return self._normalize(positive_regrets)
 
     def compute_utility(self, node: GameNode, equity: float, initial_hero_stack: float) -> float:
         """
-        Calcula a Função de Utilidade no nó terminal (Showdown) a partir da perspectiva do Hero.
-        Utility = Expected_Final_Chips - Initial_Chips + Positional_Value
-        Aqui não consideramos "fold equity artificial", pois o fold deve emergir das decisões na árvore.
+        Retorno líquido do Hero: (equity/100) * pote elegível - investimento.
+
+        Equity é a participação consolidada percentual, inclusive em empates.
+        Investimento é a redução do stack disponível desde a raiz, já líquida
+        de devoluções da árvore. Contribuições anteriores à raiz não são
+        descontadas novamente. Fold equity emerge das respostas na árvore;
+        não há bônus de posição, agressividade ou tamanho do pote.
         """
-        p_win = equity / 100.0
-        p_lose = 1.0 - p_win
-        
-        # Expected Final Chips do Hero
-        expected_final_chips = (p_win * (node.hero_stack + node.pot_size)) + (p_lose * node.hero_stack)
-        
-        # Lucro líquido esperado (Chip EV puro)
-        chip_ev = expected_final_chips - initial_hero_stack
-        
-        # Positional Value (Hero geralmente atua depois = vantagem tática no longo prazo)
-        positional_value = node.pot_size * 0.05
-        
-        utility = chip_ev + positional_value
-        return utility
+        investment = initial_hero_stack - node.hero_stack
+        return (equity / 100.0) * node.pot_size - investment
 
     def run_cfr(self, node: GameNode, hero_cards: List[str], equity: float, p0: float, p1: float, initial_hero_stack: float) -> float:
         """
@@ -64,7 +66,7 @@ class CFRSolver:
                     util_hero = node.hero_stack - initial_hero_stack
                 return util_hero if node.player == 0 else -util_hero
             
-            # Se for showdown, o utilitário do Hero é dado pela heurística.
+            # Showdown usa a participação consolidada do Hero no pote elegível.
             util_hero = self.compute_utility(node, equity, initial_hero_stack)
             return util_hero if node.player == 0 else -util_hero
             
@@ -129,9 +131,4 @@ class CFRSolver:
             return {a: 1.0/len(valid_actions) for a in valid_actions}
             
         strategy_sum = self.cumulative_strategy[info_set]
-        total = sum(strategy_sum.values())
-        
-        if total > 0:
-            return {a: round(v / total, 3) for a, v in strategy_sum.items()}
-            
-        return {a: round(1.0/len(valid_actions), 3) for a in valid_actions}
+        return self._normalize({a: strategy_sum.get(a, 0.0) for a in valid_actions})

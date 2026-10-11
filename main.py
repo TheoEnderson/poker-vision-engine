@@ -333,6 +333,8 @@ class PokerAnalyticsApp:
         elif (not _valid_chip_amount(stack) or stack == 0
               or not _valid_chip_amount(amount) or amount > stack):
             status = "Stack/valor da ação inválido ou valor recomendado excede o stack; recomendação suspensa."
+        elif (analysis.get("action_details") or {}).get("supported") is False:
+            status = analysis["reason"] + " Contexto de aposta não suportado; recomendação suspensa."
         elif context:
             action = analysis["action"]
             observed = context.get("available_actions", [])
@@ -384,7 +386,6 @@ class PokerAnalyticsApp:
         self._new_hand_hero_cards_set = False
 
         # 1. Atualiza a Máquina de Estados Finitos (FSM)
-        prev_state = self.last_state
         has_valid_hero = (
             isinstance(self.hero_cards, list)
             and len(self.hero_cards) == 2
@@ -463,6 +464,7 @@ class PokerAnalyticsApp:
         last_pos = self.last_analysis.get("hero_position") if self.last_analysis else None
         last_stack = self.last_analysis.get("hero_stack") if self.last_analysis else None
         last_num_opponents = self.last_analysis.get("num_opponents") if self.last_analysis else None
+        range_revision = getattr(self.opponent_model, "revision", 0)
         has_changed = (
             (current_board != self.last_board)
             or (current_state != self.last_state)
@@ -473,6 +475,8 @@ class PokerAnalyticsApp:
             or (self.hero_stack != last_stack)
             or (self.num_opponents != last_num_opponents)
             or (context != (self.last_analysis.get("action_context") if self.last_analysis else None))
+            or (self.last_analysis is not None
+                and range_revision != self.last_analysis.get("range_revision", range_revision))
         )
 
         hero_is_missing = (
@@ -552,12 +556,12 @@ class PokerAnalyticsApp:
                 hero_eval = evaluate_7_cards(self.hero_cards + current_board)
                 hero_hand_desc = get_hand_category_name(hero_eval)
 
-            # Issue #6: Atualização do Modelo Bayesiano de Oponentes
-            if pot_size != last_pot or current_state != prev_state:
-                if current_state == HandState.PRE_FLOP:
-                    self.opponent_model.apply_action_heuristic(pot_size, "PRE_FLOP")
-                else:
-                    self.opponent_model.apply_postflop_board(current_board, pot_size)
+            # Apenas capturas aceitas chegam aqui. O modelo deduplica evidências
+            # por mão; recálculo por pote/stack não representa nova ação adversária.
+            if current_state == HandState.PRE_FLOP:
+                self.opponent_model.apply_action_heuristic(pot_size, "PRE_FLOP")
+            else:
+                self.opponent_model.apply_postflop_board(current_board, pot_size)
 
             # Simulação de Monte Carlo para cálculo de Equity
             p_win, p_tie, p_lose, equity, elapsed = calculate_equity(
@@ -576,6 +580,8 @@ class PokerAnalyticsApp:
                 p_win=p_win,
                 p_lose=p_lose,
                 p_tie=p_tie,
+                equity=equity,
+                num_opponents=self.num_opponents,
                 pot_size=pot_size,
                 bet_to_call=bet_to_call,
                 hero_stack=self.hero_stack,
@@ -599,6 +605,7 @@ class PokerAnalyticsApp:
                 "pot_odds": decision["pot_odds"],
                 "equity": decision["equity"],
                 "opp_range_percent": "Bayesiano Dinâmico",
+                "range_revision": getattr(self.opponent_model, "revision", 0),
                 "p_win": p_win,
                 "p_tie": p_tie,
                 "p_lose": p_lose,
@@ -609,6 +616,9 @@ class PokerAnalyticsApp:
                 "sim_time": elapsed,
                 "recalculated": True,
             }
+            analysis.update({key: decision[key] for key in
+                             ("action_details", "selected_action", "selected_action_probability", "cfr_strategy")
+                             if key in decision})
 
         else:
             action = "CHECK" if bet_to_call == 0 else "FOLD"
@@ -734,7 +744,11 @@ class PokerAnalyticsApp:
         )
         print(f"╠{sep_double}╣")
         print(f"║ {C_BOLD}ANÁLISE DE RISCO & VALOR ESPERADO (EV):{C_RESET}")
-        print(f"║   • EV de Call/Check (Base): {ev_color}{ev_val:+8.2f} fichas{C_RESET}")
+        ev_label = "Parcela esperada do pote" if a["bet_to_call"] == 0 else "EV do CALL (base)"
+        print(f"║   • {ev_label}: {ev_color}{ev_val:+8.2f} fichas{C_RESET}")
+        if a["bet_to_call"] == 0:
+            print("║   • Sem apostas futuras; não é EV estratégico de CHECK.")
+        print("║   • Pote único, sem rake/side pots; não é EV de RAISE/ALL-IN.")
         print("║")
         available = a.get("action_available", False)
         label = "RECOMENDAÇÃO PARA A CAPTURA" if available else "ANÁLISE INFORMATIVA - AÇÃO DO MODELO"
@@ -743,7 +757,20 @@ class PokerAnalyticsApp:
         context = a.get("action_context") or {}
         observed = ", ".join(context.get("available_actions", [])) or "Não confirmadas"
         print(f"║   • Ações observadas nos botões: {observed}")
-        if a["recommended_amount"] > 0:
+        details = a.get("action_details") or {}
+        if a.get("selected_action"):
+            print(f"║   • Ramo avaliado: {a['selected_action']} | Probabilidade: {a['selected_action_probability']:.3f}")
+        if details and a["recommended_amount"] > 0:
+            print(f"║   • Investimento adicional (modelo): {details['additional_amount']:.12g} fichas")
+            if details.get("raise_to") is not None:
+                print(f"║   • Total da aposta na street: {details['raise_to']:.12g} fichas")
+            elif a["action"] in ("BET", "RAISE", "ALL-IN"):
+                print("║   • Total da street não confirmado; contribuições anteriores não observadas.")
+            if details.get("raise_by"):
+                print(f"║   • Incremento sobre a aposta anterior: {details['raise_by']:.12g} fichas")
+            if details.get("validation_reason"):
+                print(f"║   • {details['validation_reason']}")
+        elif a["recommended_amount"] > 0:
             if not available:
                 print(f"║   • Valor do modelo (não validado): {a['recommended_amount']:.1f} fichas")
             elif a["action"] == "CALL":

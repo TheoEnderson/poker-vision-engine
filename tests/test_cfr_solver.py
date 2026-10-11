@@ -13,8 +13,7 @@ class TestCFRSolver(unittest.TestCase):
                 self.assertTrue(math.isfinite(probability))
                 self.assertGreaterEqual(probability, 0.0)
                 self.assertLessEqual(probability, 1.0)
-        # solve() arredonda cada probabilidade para três casas decimais.
-        self.assertAlmostEqual(sum(strategy.values()), 1.0, delta=len(strategy) * 0.0005 + 1e-12)
+        self.assertAlmostEqual(math.fsum(strategy.values()), 1.0, delta=1e-12)
 
     def test_cfr_solver_basic(self):
         root = GameNode(

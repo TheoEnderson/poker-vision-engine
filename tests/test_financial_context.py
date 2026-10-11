@@ -180,21 +180,21 @@ class TestFinancialContext(unittest.TestCase):
         self.assertTrue(result["action_available"])
         self.assertTrue(result.get("call_is_all_in", False))
 
-    def test_legacy_engine_and_tree_diverge_for_unaffordable_call(self):
-        """Caracterização da limitação matemática não corrigida nesta etapa.
-
-        Chamadas diretas ao motor ainda não têm a proteção do orquestrador.
-        """
+    def test_engine_and_tree_agree_on_effective_heads_up_short_call(self):
+        """4E-B1: investimento limitado ao stack e excesso adversário devolvido."""
         node = GameNode(player=0, pot_size=295, hero_stack=5, villain_stack=5,
                         board_cards=TURN, current_street="TURN", bet_to_call=20)
         child = GameTreeBuilder()._apply_action(node, "CALL")
         with patch("src.engine.cfr_solver.CFRSolver.solve", return_value={"CALL": 1.0}):
             decision = make_decision(p_win=40, p_tie=2, p_lose=58, pot_size=295,
                                      bet_to_call=20, hero_stack=5, state="TURN",
-                                     hero_cards=HERO, board_cards=TURN)
+                                     hero_cards=HERO, board_cards=TURN, equity=41)
         self.assertEqual(child.hero_stack, 0)
-        self.assertEqual(child.pot_size, 300)  # A árvore paga somente 5.
-        self.assertEqual(decision["recommended_amount"], 20)  # Saída legada não limita o call.
+        self.assertEqual(child.pot_size, 285)  # 295 + 5 pagos - 15 não cobertos.
+        self.assertEqual(child.villain_stack, 20)
+        self.assertEqual(decision["recommended_amount"], 5)
+        self.assertEqual(decision["action_details"]["uncalled_refund"], 15)
+        self.assertAlmostEqual(decision["ev"], .41 * 285 - 5)
 
 
 class TestStackOCRConfirmation(unittest.TestCase):

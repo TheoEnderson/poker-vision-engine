@@ -5,6 +5,7 @@ Modelagem de Ranges de Oponentes usando Bayesian Hand Weights.
 
 from typing import List, Tuple, Set, Dict
 import itertools
+import math
 import random
 
 # Cache global das combinações
@@ -49,15 +50,20 @@ def get_chen_score(v1: int, v2: int, suited: bool) -> float:
 class OpponentModel:
     """
     Mantém uma matriz/dicionário de pesos para as 1326 combinações de mãos possíveis.
-    O range é degradado/afunilado a cada ação do oponente.
+    Cada contexto/board é aplicado uma vez por mão. O chamador atual não fornece
+    ações adversárias identificadas; mudanças de pote não são eventos de ação.
     """
     def __init__(self, full_deck: List[str]):
         self.full_deck = full_deck
         self.weights: Dict[Tuple[str, str], float] = {}
+        self.revision = 0
         self.reset()
         
     def reset(self):
         """Inicializa todas as mãos com peso baseado vagamente na força natural (Chen score)."""
+        self.weights.clear()
+        self._applied_action_contexts = set()
+        self._applied_boards = set()
         combos = get_all_combos(self.full_deck)
         for c1, c2 in combos:
             r1, s1 = c1[:-1].upper(), c1[-1].lower()
@@ -68,11 +74,27 @@ class OpponentModel:
             # Normalizamos o score base
             base_weight = max(0.1, (score + 2.0) / 10.0) 
             self.weights[(c1, c2)] = base_weight
+        self._normalize()
+        self.revision += 1
+
+    def _normalize(self):
+        """Muda apenas a escala dos pesos, preservando todas as razões."""
+        total = math.fsum(self.weights.values())
+        if total > 0:
+            self.weights = {combo: weight / total for combo, weight in self.weights.items()}
 
     def apply_action_heuristic(self, pot_size: float, state: str):
         """
-        Afunila o range baseado no tamanho do pote (agressividade).
+        Aplica uma vez o contexto inicial da street, com os fatores legados.
+
+        Nome mantido por compatibilidade. A API não recebe jogador, ação ou ID
+        de evento: não é possível inferir uma nova ação de outra leitura do pote.
         """
+        if state in self._applied_action_contexts:
+            return False
+        self._applied_action_contexts.add(state)
+        if (state == "PRE_FLOP" and pot_size <= 15) or (state != "PRE_FLOP" and pot_size <= 50):
+            return False
         for combo, w in self.weights.items():
             c1, c2 = combo
             r1, s1 = c1[:-1].upper(), c1[-1].lower()
@@ -98,17 +120,30 @@ class OpponentModel:
                 if pot_size > 50:
                     if not is_pair and v1 < 8 and v2 < 8 and not is_suited:
                         self.weights[combo] *= 0.1
+        self._normalize()
+        self.revision += 1
+        return True
 
     def apply_postflop_board(self, board_cards: List[str], pot_size: float):
         """
-        Atualiza probabilidades baseando-se na textura do board.
+        Aplica cada board uma única vez aos pesos das evidências anteriores.
+
+        A chave ignora ordem, caixa e a diferença T/10. O limiar legado do pote
+        é avaliado na primeira observação válida; oscilações não reabrem o board.
         """
-        if not board_cards or pot_size < 30:
-            return
+        if not board_cards:
+            return False
+        evidence = tuple(sorted((_VAL_MAP.get(c[:-1].upper(), 0), c[-1].lower()) for c in board_cards))
+        if evidence in self._applied_boards:
+            return False
+        self._applied_boards.add(evidence)
+        if pot_size < 30:
+            return False
             
         board_vals = set(_VAL_MAP.get(c[:-1].upper(), 0) for c in board_cards if len(c) >= 2)
         board_suits = [c[-1].lower() for c in board_cards if len(c) >= 2]
-        suit_counts = {s: board_suits.count(s) for s in set(board_suits)}
+        # Ordem estável também quando duas cores possuem duas cartas no board.
+        suit_counts = {s: board_suits.count(s) for s in sorted(set(board_suits))}
         flush_draw_suit = None
         for s, count in suit_counts.items():
             if count >= 2:
@@ -129,6 +164,9 @@ class OpponentModel:
                 self.weights[combo] *= 1.5
             else:
                 self.weights[combo] *= 0.5
+        self._normalize()
+        self.revision += 1
+        return True
 
     def get_weighted_combos(self, dead_cards: Set[str]) -> Tuple[List[Tuple[str, str]], List[float]]:
         """
@@ -137,10 +175,14 @@ class OpponentModel:
         valid_combos = []
         valid_weights = []
         for combo, w in self.weights.items():
-            if w > 0.001 and combo[0] not in dead_cards and combo[1] not in dead_cards:
+            # Um corte absoluto eliminaria mãos apenas pela normalização da escala.
+            if w > 0 and combo[0] not in dead_cards and combo[1] not in dead_cards:
                 valid_combos.append(combo)
                 valid_weights.append(w)
                 
+        total = math.fsum(valid_weights)
+        if total > 0:
+            valid_weights = [w / total for w in valid_weights]
         return valid_combos, valid_weights
 
 # Fallback para o teste/interface antiga
