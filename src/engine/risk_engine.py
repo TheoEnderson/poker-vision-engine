@@ -183,8 +183,13 @@ def make_decision(
                 recommended_amount = bet_to_call
             elif chosen_action.startswith("BET_"):
                 pct = float(chosen_action.split("_")[1]) / 100.0
-                action = "RAISE" if bet_to_call > 0 else "BET"
-                recommended_amount = min(hero_stack, round(pot_size * pct, 1))
+                if bet_to_call > 0:
+                    action = "RAISE"
+                    base_raise = bet_to_call + round(pot_size * pct, 1)
+                    recommended_amount = min(hero_stack, max(bet_to_call * 2.0, base_raise))
+                else:
+                    action = "BET"
+                    recommended_amount = min(hero_stack, round(pot_size * pct, 1))
             elif chosen_action == "ALL_IN":
                 action = "ALL-IN"
                 recommended_amount = hero_stack
@@ -257,8 +262,13 @@ def make_decision(
                         recommended_amount = bet_to_call
                     elif chosen_action.startswith("BET_"):
                         pct = float(chosen_action.split("_")[1]) / 100.0
-                        action = "RAISE" if bet_to_call > 0 else "BET"
-                        recommended_amount = min(hero_stack, round(pot_size * pct, 1))
+                        if bet_to_call > 0:
+                            action = "RAISE"
+                            base_raise = bet_to_call + round(pot_size * pct, 1)
+                            recommended_amount = min(hero_stack, max(bet_to_call * 2.0, base_raise))
+                        else:
+                            action = "BET"
+                            recommended_amount = min(hero_stack, round(pot_size * pct, 1))
                     elif chosen_action == "ALL_IN":
                         action = "ALL-IN"
                         recommended_amount = hero_stack

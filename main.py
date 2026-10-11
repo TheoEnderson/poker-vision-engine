@@ -130,7 +130,7 @@ class PokerAnalyticsApp:
                     self.hero_cards_stable_frames = 1
                     self.last_detected_hero = hero_detected
                     
-                if self.hero_cards_stable_frames >= 2:
+                if self.hero_cards_stable_frames >= 1:
                     self.hero_cards = hero_detected
             elif not already_has_valid_hand:
                 self.hero_cards_stable_frames = 0

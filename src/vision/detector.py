@@ -513,16 +513,21 @@ def find_and_detect_hero_cards(
         red_mask = ((h < 15) | (h > 165)) & (s > 90) & (v > 80)
         sbin = ((black_mask | red_mask).astype(np.uint8)) * 255
 
-        rank_reg = sbin[:36, :]
+        sh, sw = slot_img.shape[:2]
+        rank_cutoff = max(36, int(sh * 0.45))
+        rank_reg = sbin[:rank_cutoff, :]
         best_r, best_r_score = match_glyph_multiscale(rank_reg, ranks)
 
-        candidate_suits = filter_suits_by_color(slot_img[16:, :35], suits)
-        suit_reg = sbin[16:, :35]
+        suit_start = min(16, int(sh * 0.2))
+        suit_end = max(35, int(sh * 0.75))
+        candidate_suits = filter_suits_by_color(slot_img[suit_start:suit_end, :], suits)
+        suit_reg = sbin[suit_start:suit_end, :]
         best_s, best_s_score = match_glyph_multiscale(suit_reg, candidate_suits)
 
+        local_thresh = min(threshold, 0.55)
         card_str = (
             f"{best_r}{best_s}"
-            if (best_r_score >= threshold and best_s_score >= threshold)
+            if (best_r_score >= local_thresh and best_s_score >= local_thresh)
             else "Desconhecida"
         )
         return card_str, best_r, best_r_score, best_s, best_s_score
