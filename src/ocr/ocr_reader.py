@@ -153,19 +153,18 @@ def parse_action_button_text(raw_text: str) -> Dict[str, Any]:
         "FOLD": "FOLD", "DESISTO": "FOLD", "DESISTIR": "FOLD",
         "RAISE": "RAISE", "AUMENTO": "RAISE", "AUMENTAR": "RAISE",
         "BET": "BET", "APOSTO": "BET", "APOSTAR": "BET",
-        "ALL-IN": "ALL-IN", "ALL IN": "ALL-IN",
+        "ALL-IN": "ALL-IN", "ALL IN": "ALL-IN", "TUDO": "ALL-IN",
     }
     matches = list(re.finditer(r"\b(?:" + "|".join(labels) + r")\b", clean))
     actions = list(dict.fromkeys(labels[m.group()] for m in matches))
     if not actions or ("CHECK" in actions and "CALL" in actions):
         return unknown
 
-    call_values = []
+    values_by_label = {}
     for index, match in enumerate(matches):
-        if labels[match.group()] != "CALL":
-            continue
+        lbl = labels[match.group()]
         end = matches[index + 1].start() if index + 1 < len(matches) else len(clean)
-        # Só aceita número imediatamente associado ao CALL, nunca ao RAISE.
+        # Só aceita número imediatamente associado ao botão atual
         amount = re.fullmatch(r"\s*([$€£]\s*)?(\d+(?:[.,]\d+)*)\s*", clean[match.end():end])
         if amount:
             raw = amount.group(2)
@@ -181,16 +180,46 @@ def parse_action_button_text(raw_text: str) -> Dict[str, Any]:
                 raw = "".join(parts)
             value = float(raw)
             if math.isfinite(value) and value > 0:
-                call_values.append(value)
-    bet = 0.0 if "CHECK" in actions else None
-    if "CALL" in actions and len(call_values) == 1:
-        bet = call_values[0]
-    return {
+                values_by_label.setdefault(lbl, []).append(value)
+
+    all_in_nature = None
+    if "ALL-IN" in actions:
+        if "CHECK" in actions:
+            all_in_nature = "BET"
+        elif "CALL" in actions:
+            all_in_nature = "RAISE"
+        elif actions == ["FOLD", "ALL-IN"]:
+            all_in_nature = "CALL"
+        else:
+            all_in_nature = "UNKNOWN"
+
+    call_values = values_by_label.get("CALL", [])
+    all_in_values = values_by_label.get("ALL-IN", [])
+
+    bet = None
+    if "CHECK" in actions:
+        bet = 0.0
+        action_type = "CHECK"
+    elif "CALL" in actions:
+        action_type = "CALL"
+        if len(call_values) == 1:
+            bet = call_values[0]
+    elif "ALL-IN" in actions and all_in_nature == "CALL":
+        action_type = "CALL"
+        if len(all_in_values) == 1:
+            bet = all_in_values[0]
+    else:
+        action_type = "UNKNOWN"
+
+    result = {
         "is_hero_turn": True,
         "bet_to_call": bet,
-        "action_type": "CHECK" if "CHECK" in actions else "CALL" if "CALL" in actions else "UNKNOWN",
+        "action_type": action_type,
         "available_actions": actions,
     }
+    if all_in_nature is not None:
+        result["all_in_nature"] = all_in_nature
+    return result
 
 
 def detect_turn_and_bet_to_call(

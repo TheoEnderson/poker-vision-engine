@@ -492,7 +492,11 @@ class PokerAnalyticsApp:
                 status = "Vez do Hero não confirmada."
             elif not analysis.get("recalculated") or analysis.get("bet_to_call") is None:
                 status = "Dados insuficientes para validar uma recomendação."
-            elif action not in observed:
+            elif action not in observed and not (
+                action == "CALL" and "ALL-IN" in observed
+                and context.get("all_in_nature") == "CALL"
+                and analysis.get("call_is_all_in", False)
+            ):
                 status = "Ação do modelo não observada nos botões desta captura."
             elif action in ("BET", "RAISE", "ALL-IN"):
                 status = "Tipo de ação observado, mas tamanho/limites da aposta não validados."

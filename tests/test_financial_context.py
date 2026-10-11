@@ -81,6 +81,39 @@ class TestFinancialContext(unittest.TestCase):
         self.assertTrue(result.get("call_is_all_in", False))
         self.assertEqual(self.make_decision.call_args.kwargs["bet_to_call"], 5)
 
+    def test_fold_all_in_with_matching_stack_is_validated_call_all_in(self):
+        context = ocr_reader.parse_action_button_text("DESISTO ALL-IN 970")
+        result = self.process(970, pot=970, call=context["bet_to_call"], context=context)
+        self.assertTrue(result["action_available"])
+        self.assertTrue(result.get("call_is_all_in", False))
+        self.assertEqual(result["action"], "CALL")
+        self.assertEqual(result["recommended_amount"], 970)
+        self.assertIn("CALL ALL-IN", result["action_status"])
+        self.assertEqual(self.make_decision.call_args.kwargs["bet_to_call"], 970)
+
+    def test_fold_all_in_without_amount_suspends_recommendation(self):
+        context = ocr_reader.parse_action_button_text("DESISTO ALL-IN")
+        result = self.process(970, pot=970, call=context["bet_to_call"], context=context)
+        self.assertFalse(result["action_available"])
+        self.assertFalse(result["recalculated"])
+        self.assertEqual(result["action"], "AGUARDANDO VALOR DO CALL")
+        self.make_decision.assert_not_called()
+
+    def test_stack_below_all_in_bet_is_suspended_without_inventing_call(self):
+        context = ocr_reader.parse_action_button_text("DESISTO ALL-IN 970")
+        result = self.process(500, pot=970, call=970, context=context)
+        self.assert_suspended(result)
+        self.assertIn("excede o stack", result["reason"])
+        self.make_decision.assert_not_called()
+
+    def test_unreadable_financial_ocr_suspends_recommendation(self):
+        context = ocr_reader.parse_action_button_text("DESISTO ALL-IN ???")
+        result = self.process(970, pot=970, call=context["bet_to_call"], context=context)
+        self.assertFalse(result["action_available"])
+        self.assertFalse(result["recalculated"])
+        self.assertEqual(result["action"], "AGUARDANDO VALOR DO CALL")
+        self.make_decision.assert_not_called()
+
     def test_zero_stack_has_no_current_action(self):
         self.assert_suspended(self.process(0, call=0))
         self.make_decision.assert_not_called()

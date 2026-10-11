@@ -40,6 +40,25 @@ class TestHandCycleRecovery(unittest.TestCase):
         self.assertEqual(len(self.analyses), 2)
         self.assertTrue(self.analyses[-1]["equity_cached"])
 
+    def test_temporary_unreadable_hero_in_turn_does_not_break_hand_and_recovers_action(self):
+        c1 = capture(pot=6, call=0, turn=False, position=UNKNOWN)
+        c2 = capture(pot=970, call=970, stack=970, actions=["FOLD", "ALL-IN"], position=UNKNOWN)
+        c2_context = dict(is_hero_turn=True, action_type="CALL", all_in_nature="CALL",
+                          bet_to_call=970, available_actions=["FOLD", "ALL-IN"])
+        c3 = capture(hero=[], pot=970, call=970, stack=970, actions=["FOLD", "ALL-IN"], position=UNKNOWN)
+        c4 = capture(pot=970, call=970, stack=970, actions=["FOLD", "ALL-IN"], position=UNKNOWN)
+
+        with patch("main.detect_turn_and_bet_to_call",
+                   side_effect=lambda f, **kw: c2_context if f.get("actions") == ["FOLD", "ALL-IN"] else cycle.context(f)):
+            self.live([c1, c2, c3, c4])
+
+        self.assert_continuity()
+        self.assertEqual(len(self.analyses), 2)
+        for analysis in self.analyses:
+            self.assertTrue(analysis["action_available"])
+            self.assertEqual(analysis["action"], "FOLD")
+            self.assertEqual(analysis["bet_to_call"], 970)
+
     def test_preflop_fold_then_public_board_and_new_deal_without_zero_or_dealer(self):
         new = capture(hero=OTHER, pot=15, position=UNKNOWN)
         away = capture(hero=[], board=FLOP, pot=25, turn=False, position=UNKNOWN)
