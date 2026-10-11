@@ -466,44 +466,6 @@ def find_and_detect_hero_cards(
         elif 3000 < area < 20000 and 120 < cbw < 250 and 40 < cbh < 120:
             candidates.append((cbx, cby, cbw, cbh))
 
-    hero_box = None
-    if len(candidates) == 2:
-        c1, c2 = sorted(candidates, key=lambda b: b[0])
-        if abs(c1[1] - c2[1]) < 30 and abs((c1[0] + c1[2]) - c2[0]) < 50:
-            hx = c1[0]
-            hy = min(c1[1], c2[1])
-            hw = (c2[0] + c2[2]) - hx
-            hh = max(c1[1] + c1[3], c2[1] + c2[3]) - hy
-            hero_box = (hx, hy, hw, hh)
-    elif len(candidates) == 1 and candidates[0][2] >= 120:
-        hero_box = candidates[0]
-    elif len(candidates) > 2:
-        for i in range(len(candidates)):
-            for j in range(i + 1, len(candidates)):
-                c1, c2 = sorted([candidates[i], candidates[j]], key=lambda b: b[0])
-                if abs(c1[1] - c2[1]) < 30 and abs((c1[0] + c1[2]) - c2[0]) < 50:
-                    hx = c1[0]
-                    hy = min(c1[1], c2[1])
-                    hw = (c2[0] + c2[2]) - hx
-                    hh = max(c1[1] + c1[3], c2[1] + c2[3]) - hy
-                    hero_box = (hx, hy, hw, hh)
-                    break
-            if hero_box:
-                break
-
-    if not hero_box:
-        if verbose:
-            print("[INFO] Nenhuma carta aberta do Hero detectada fora do board (Fold ou mesa vazia).")
-        return []
-
-    hx, hy, hw, hh = hero_box
-    hero_coords_dict = {"top": int(hy), "left": int(hx), "width": int(hw), "height": int(hh)}
-
-    hero_crop = img[hy : hy + hh, hx : hx + hw]
-    half_w = hw // 2
-    slot1 = hero_crop[:, :half_w]
-    slot2 = hero_crop[:, half_w:]
-
     def match_hero_slot(slot_img: np.ndarray, is_second_slot: bool = False):
         sgray = cv2.cvtColor(slot_img, cv2.COLOR_BGR2GRAY)
         shsv = cv2.cvtColor(slot_img, cv2.COLOR_BGR2HSV)
@@ -532,20 +494,62 @@ def find_and_detect_hero_cards(
         )
         return card_str, best_r, best_r_score, best_s, best_s_score
 
-    c1_str, r1, sr1, s1, ss1 = match_hero_slot(slot1, is_second_slot=False)
-    c2_str, r2, sr2, s2, ss2 = match_hero_slot(slot2, is_second_slot=True)
+    candidate_boxes = []
+    # 1. Candidatos unidos (par de cartas junto)
+    for c in candidates:
+        if 110 <= c[2] <= 260 and 40 <= c[3] <= 120:
+            candidate_boxes.append(c)
 
-    if c1_str == "Desconhecida":
-        save_unknown_card(slot1, prefix="hero_slot_1", verbose=verbose)
-    if c2_str == "Desconhecida":
-        save_unknown_card(slot2, prefix="hero_slot_2", verbose=verbose)
+    # 2. Candidatos separados (duas cartas lado a lado)
+    if len(candidates) >= 2:
+        for i in range(len(candidates)):
+            for j in range(i + 1, len(candidates)):
+                c1, c2 = sorted([candidates[i], candidates[j]], key=lambda b: b[0])
+                if abs(c1[1] - c2[1]) < 35 and abs((c1[0] + c1[2]) - c2[0]) < 55:
+                    hx = c1[0]
+                    hy = min(c1[1], c2[1])
+                    hw = (c2[0] + c2[2]) - hx
+                    hh = max(c1[1] + c1[3], c2[1] + c2[3]) - hy
+                    candidate_boxes.append((hx, hy, hw, hh))
 
-    if c1_str == "Desconhecida" or c2_str == "Desconhecida":
+    if not candidate_boxes:
         if verbose:
-            print(f"[INFO] Cartas do Hero não reconhecidas com confiança suficiente: [{c1_str}, {c2_str}]. Retornando [].")
+            print("[INFO] Nenhuma carta aberta do Hero detectada fora do board (Fold ou mesa vazia).")
         return []
 
-    hero_cards = [c1_str, c2_str]
+    best_cards = []
+    best_box = None
+    last_res = None
+
+    for box in candidate_boxes:
+        hx, hy, hw, hh = box
+        hero_crop = img[hy : hy + hh, hx : hx + hw]
+        half_w = hw // 2
+        slot1 = hero_crop[:, :half_w]
+        slot2 = hero_crop[:, half_w:]
+
+        c1_str, r1, sr1, s1, ss1 = match_hero_slot(slot1, is_second_slot=False)
+        c2_str, r2, sr2, s2, ss2 = match_hero_slot(slot2, is_second_slot=True)
+        last_res = (box, slot1, slot2, c1_str, r1, sr1, s1, ss1, c2_str, r2, sr2, s2, ss2)
+
+        if c1_str != "Desconhecida" and c2_str != "Desconhecida":
+            best_cards = [c1_str, c2_str]
+            best_box = box
+            break
+
+    if not best_cards:
+        if last_res:
+            box, slot1, slot2, c1_str, r1, sr1, s1, ss1, c2_str, r2, sr2, s2, ss2 = last_res
+            if c1_str == "Desconhecida":
+                save_unknown_card(slot1, prefix="hero_slot_1", verbose=verbose)
+            if c2_str == "Desconhecida":
+                save_unknown_card(slot2, prefix="hero_slot_2", verbose=verbose)
+            if verbose:
+                print(f"[INFO] Cartas do Hero não reconhecidas com confiança suficiente: [{c1_str}, {c2_str}]. Retornando [].")
+        return []
+
+    hero_coords_dict = {"top": int(best_box[1]), "left": int(best_box[0]), "width": int(best_box[2]), "height": int(best_box[3])}
+    hero_cards = best_cards
 
     if verbose:
         print("=" * 70)
