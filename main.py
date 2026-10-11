@@ -5,6 +5,7 @@ Orquestrador Mestre integrando Visão Computacional, OCR, Máquina de Estados e 
 """
 
 import os
+import math
 import sys
 import time
 from pathlib import Path
@@ -54,6 +55,11 @@ C_YELLOW = "\033[93m"
 C_RED = "\033[91m"
 
 
+def _valid_chip_amount(value: Any) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value >= 0)
+
+
 class PokerAnalyticsApp:
     """
     Orquestrador Mestre do Poker Analytics Engine (PAE).
@@ -96,11 +102,118 @@ class PokerAnalyticsApp:
         self.last_analysis: Optional[Dict[str, Any]] = None
         self.total_frames_processed: int = 0
         self.total_recalculations: int = 0
+        self.total_uncertain_frames: int = 0
         self._new_hand_hero_cards_set: bool = False
+        self._hand_generation = self.state_machine.hand_generation
+        self._hand_boundary_seen = False
+        self._new_hand_candidate = None
+        self._new_hand_candidate_count = 0
+        self.last_hand_observation: Optional[Dict[str, Any]] = None
         
         from src.engine.range_model import OpponentModel
         from src.engine.evaluator import FULL_DECK
         self.opponent_model = OpponentModel(FULL_DECK)
+
+    def _clear_hand_context(self, hero_cards: Optional[List[str]] = None):
+        """Descarta dados da mão anterior, mesmo quando as novas cartas são iguais."""
+        self.hero_cards = list(hero_cards) if hero_cards is not None else []
+        self.last_analysis = None
+        self.last_board = []
+        self.last_state = HandState.WAITING_HAND
+        self.hero_position = "Desconhecida"
+        self._new_hand_hero_cards_set = hero_cards is not None
+        self._hand_generation = self.state_machine.hand_generation
+        self.hero_cards_stable_frames = 0
+        self.last_detected_hero = None
+        self._hero_was_absent = False
+        self._hand_boundary_seen = False
+        self._new_hand_candidate = None
+        self._new_hand_candidate_count = 0
+        self.opponent_model.reset()
+
+    def reset_hand(self, hero_cards: Optional[List[str]] = None, reason: str = "Reset de mão"):
+        """Reset explícito; hero_cards só deve conter cartas adquiridas para a nova mão."""
+        self.state_machine.reset_hand(reason=reason)
+        self._clear_hand_context(hero_cards)
+
+    def observe_hand(self, hero_cards: List[str], board: List[str], pot: Optional[float], debug: bool = False) -> str:
+        """Observa o ciclo mesmo fora do turno; não calcula nem executa ações.
+
+        Redistribuição exige evidência positiva e corroborada: novas hole cards,
+        um board reiniciado com cartas diferentes, ou um intervalo de encerramento
+        seguido de redistribuição. Board ausente isoladamente nunca confirma mão.
+        """
+        previous_state = self.state_machine.current_state
+        known_board = self.state_machine.board
+        duplicates = PokerHandStateMachine.find_duplicate_cards(hero_cards + board)
+        valid_board = PokerHandStateMachine.filter_valid_cards(board)
+        unknown = any(not c or c.lower() in ("desconhecida", "none", "--") for c in board)
+        complete = not unknown and len(valid_board) in (0, 3, 4, 5) and len(set(valid_board)) == len(valid_board)
+        clear = complete and not valid_board
+        valid_hero = len(hero_cards) == 2 and len(set(hero_cards)) == 2 and all(
+            c and c.lower() not in ("desconhecida", "vazio", "none", "--") for c in hero_cards
+        )
+        changed = valid_hero and bool(self.hero_cards) and set(hero_cards) != set(self.hero_cards)
+        # Mais de uma carta nova completa não é simples ausência/regressão de OCR.
+        restarted = (complete and len(valid_board) >= 3 and bool(known_board)
+                     and len(valid_board) <= len(known_board)
+                     and len(set(valid_board) - set(known_board)) >= 2)
+        last_pot = self.last_analysis.get("pot_size", 0) if self.last_analysis else 0
+        pot_changed = (_valid_chip_amount(pot) and pot > 0
+                       and _valid_chip_amount(last_pot) and last_pot > 0 and pot != last_pot)
+        if not hero_cards and not duplicates:
+            self._hero_was_absent = True
+            if clear and self.hero_cards:
+                self._hand_boundary_seen = True
+        boundary = getattr(self, "_hand_boundary_seen", False)
+        criteria = dict(hero_alterado=changed, board_completo=complete,
+                        board_limpo=clear, board_reiniciado=restarted,
+                        intervalo_observado=boundary, pote_alterado=pot_changed)
+
+        def report(status, reason):
+            diagnostic = dict(estado_anterior=previous_state.value, hero_observado=list(hero_cards),
+                              board_observado=list(board), criterios=dict(criteria),
+                              pote_anterior=last_pot, pote_observado=pot,
+                              resultado=status, motivo=reason)
+            if debug and diagnostic != getattr(self, "last_hand_observation", None):
+                print(f"[DEBUG MÃO] {diagnostic}")
+            self.last_hand_observation = diagnostic
+            return status
+
+        if duplicates:
+            # Uma captura impossível não corrobora redistribuição nem autoriza reset.
+            self._new_hand_candidate = None
+            self._new_hand_candidate_count = 0
+            return report("UNCERTAIN", f"Cartas duplicadas na captura: {', '.join(duplicates)}")
+
+        proposal = valid_hero and complete and (
+            (changed and (clear or restarted)) or restarted or (boundary and clear and pot_changed)
+        )
+        if proposal:
+            candidate = (tuple(sorted(hero_cards)), tuple(valid_board))
+            count = getattr(self, "_new_hand_candidate_count", 0) + 1 if candidate == getattr(self, "_new_hand_candidate", None) else 1
+            self._new_hand_candidate = candidate
+            self._new_hand_candidate_count = count
+            criteria["observacoes_compativeis"] = count
+            if count >= 2:
+                reason = "Nova mão confirmada: redistribuição corroborada de Hero/board"
+                print(f"\n[INFO] {reason}")
+                self.reset_hand(hero_cards=hero_cards, reason=reason)
+                self.state_machine.update_board(board, has_hero_cards=True)
+                return report("NEW_HAND", reason)
+            return report("UNCERTAIN", "Redistribuição candidata; aguardando observação compatível")
+
+        self._new_hand_candidate = None
+        self._new_hand_candidate_count = 0
+        if not valid_hero or changed or not complete:
+            return report("UNCERTAIN", "Hero/board incerto ou mudança sem evidência de redistribuição")
+        if boundary and clear:
+            return report("UNCERTAIN", "Intervalo observado, mas redistribuição ainda indistinguível de falha visual")
+        if not self.state_machine.update_board(board, has_hero_cards=True):
+            return report("UNCERTAIN", "Board incompatível com a mão conhecida; reset não confirmado")
+        self._hero_was_absent = False
+        self._hand_boundary_seen = False
+        return report("CURRENT", "Captura compatível com a mão conhecida")
 
     def process_frame(
         self,
@@ -129,6 +242,7 @@ class PokerAnalyticsApp:
             already_has_valid_hand = (
                 isinstance(self.hero_cards, list)
                 and len(self.hero_cards) == 2
+                and not PokerHandStateMachine.find_duplicate_cards(self.hero_cards)
                 and all(
                     isinstance(c, str)
                     and len(c) >= 2
@@ -155,11 +269,9 @@ class PokerAnalyticsApp:
         # 2. Leitura numérica do pote via OCR
         actual_pot = pot_size
         if self.auto_detect_pot and actual_pot is None:
-            extracted_pot = extract_pot(frame_or_path, verbose=False)
-            if extracted_pot > 0:
-                actual_pot = extracted_pot
+            actual_pot = extract_pot(frame_or_path, default_value=None, verbose=False)
 
-        if actual_pot is None:
+        if actual_pot is None and not self.auto_detect_pot:
             actual_pot = 85.0
         new_position = extract_hero_position(frame_or_path, verbose=False)
         if new_position != "Desconhecida" and self.hero_position == "Desconhecida":
@@ -182,13 +294,46 @@ class PokerAnalyticsApp:
             detected_cards, actual_pot, actual_bet, show_dashboard, action_context=turn_info
         )
 
+    def _financial_context_error(self, pot, call, context) -> Optional[str]:
+        """Não estima fichas nem converte aposta nominal em call all-in."""
+        if not _valid_chip_amount(self.hero_stack):
+            return "Stack não confirmado ou inválido na captura atual."
+        if not _valid_chip_amount(pot):
+            return "Pote não confirmado ou inválido na captura atual."
+        if call is not None and not _valid_chip_amount(call):
+            return "Valor do CALL inválido na captura atual."
+        if self.hero_stack == 0:
+            return "Stack zero: Hero pode já estar all-in; nenhuma ação atual validada."
+        if call is not None and call > self.hero_stack:
+            return (f"CALL de {call:g} excede o stack de {self.hero_stack:g}. Possível call all-in; "
+                    "valor efetivo e pote elegível não confirmados. Não foi reduzido o CALL por estimativa.")
+        if context and context.get("is_hero_turn") and call is not None:
+            observed_call = context.get("bet_to_call")
+            if not _valid_chip_amount(observed_call) or observed_call != call:
+                return "Valor do CALL da análise difere do valor confirmado nos botões da captura."
+        return None
+
     @staticmethod
     def _with_action_context(analysis: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Preserva a ação do modelo; valida separadamente sua disponibilidade na captura."""
         analysis["action_context"] = context
         available = False
         status = "Turno e ações não verificados."
-        if context:
+        stack = analysis.get("hero_stack")
+        amount = analysis.get("recommended_amount")
+        call = analysis.get("bet_to_call")
+        analysis["call_is_all_in"] = (
+            analysis["action"] == "CALL" and _valid_chip_amount(stack) and stack > 0
+            and amount == call == stack
+        )
+        if analysis.get("observation_valid") is False:
+            status = "Board da captura incerto; nenhuma recomendação atual validada."
+            if analysis.get("duplicate_cards") or analysis.get("financial_valid") is False:
+                status = analysis["reason"] + " Nenhuma recomendação atual validada."
+        elif (not _valid_chip_amount(stack) or stack == 0
+              or not _valid_chip_amount(amount) or amount > stack):
+            status = "Stack/valor da ação inválido ou valor recomendado excede o stack; recomendação suspensa."
+        elif context:
             action = analysis["action"]
             observed = context.get("available_actions", [])
             bet = context.get("bet_to_call")
@@ -209,6 +354,8 @@ class PokerAnalyticsApp:
                         and bet == analysis["bet_to_call"] == analysis["recommended_amount"])
                 )
                 status = "Compatível com os botões e o valor observados na captura." if available else "Valor/contexto da ação não confirmado."
+                if available and analysis["call_is_all_in"]:
+                    status = "CALL ALL-IN: valor efetivo observado no botão corresponde ao stack inteiro."
         analysis["action_available"] = available
         analysis["action_status"] = status
         return analysis
@@ -216,7 +363,7 @@ class PokerAnalyticsApp:
     def process_cards(
         self,
         detected_cards: List[str],
-        pot_size: float = 85.0,
+        pot_size: Optional[float] = 85.0,
         bet_to_call: Optional[float] = 30.0,
         show_dashboard: bool = True,
         action_context: Optional[Dict[str, Any]] = None,
@@ -230,6 +377,12 @@ class PokerAnalyticsApp:
         if context is not None:
             context["available_actions"] = list(context.get("available_actions", []))
 
+        # Também reconhece resets explícitos feitos diretamente na FSM.
+        if getattr(self, "_hand_generation", 0) != self.state_machine.hand_generation:
+            self._clear_hand_context()
+        # Sinal de aquisição, não autorização persistente para preservar cartas antigas.
+        self._new_hand_hero_cards_set = False
+
         # 1. Atualiza a Máquina de Estados Finitos (FSM)
         prev_state = self.last_state
         has_valid_hero = (
@@ -242,33 +395,66 @@ class PokerAnalyticsApp:
                 for c in self.hero_cards
             )
         )
-        self.state_machine.update_board(detected_cards, has_hero_cards=has_valid_hero)
+        duplicates = PokerHandStateMachine.find_duplicate_cards(list(self.hero_cards or []) + detected_cards)
+        if duplicates:
+            # Validação conjunta ANTES da transição, do cache e de qualquer matemática.
+            self.state_machine.board_read_status = "CONFLICT"
+            board_is_valid = False
+        else:
+            board_is_valid = self.state_machine.update_board(detected_cards, has_hero_cards=has_valid_hero)
         current_state = self.state_machine.current_state
         current_board = self.state_machine.board
 
-        # Destrancamento Seguro entre Rodadas
-        if self.auto_detect_hero:
-            if current_state == HandState.WAITING_HAND:
-                if not getattr(self, '_new_hand_hero_cards_set', False):
-                    self.hero_cards = []
-                self._new_hand_hero_cards_set = False
-                self.opponent_model.reset()
-                self.last_analysis = None
-                self.hero_position = "Desconhecida"
-            elif current_state == HandState.PRE_FLOP and prev_state not in (HandState.PRE_FLOP, HandState.WAITING_HAND):
-                if not getattr(self, '_new_hand_hero_cards_set', False):
-                    self.hero_cards = []
-                self._new_hand_hero_cards_set = False
-                self.opponent_model.reset()
-                self.last_analysis = None
-                self.hero_position = "Desconhecida"
-            elif len(current_board) == 0 and len(self.last_board) > 0:
-                if not getattr(self, '_new_hand_hero_cards_set', False):
-                    self.hero_cards = []
-                self._new_hand_hero_cards_set = False
-                self.opponent_model.reset()
-                self.last_analysis = None
-                self.hero_position = "Desconhecida"
+        financial_error = self._financial_context_error(pot_size, bet_to_call, context) if board_is_valid else None
+        if not board_is_valid or financial_error:
+            # Não contamina o cache válido nem atualiza ranges com uma captura rejeitada.
+            self.total_uncertain_frames = getattr(self, "total_uncertain_frames", 0) + 1
+            analysis = dict(self.last_analysis or {
+                "hero_position": self.hero_position,
+                "hero_hand": "Não avaliada",
+                "pot_size": pot_size,
+                "bet_to_call": bet_to_call,
+                "hero_stack": self.hero_stack,
+                "num_opponents": self.num_opponents,
+                "pot_odds": 0.0,
+                "equity": 0.0,
+                "p_win": 0.0,
+                "p_tie": 0.0,
+                "p_lose": 0.0,
+                "ev": 0.0,
+                "sim_time": 0.0,
+            })
+            analysis.update({
+                "state": current_state.value,
+                "board": list(current_board),
+                "hero_cards": list(self.hero_cards),
+                "board_observation": list(detected_cards),
+                "board_read_status": self.state_machine.board_read_status,
+                "observation_valid": False,
+                "action": "AGUARDANDO RECONHECIMENTO DO BOARD",
+                "recommended_amount": 0.0,
+                "reason": "Leitura rejeitada; estado conhecido preservado sem recomendação atual.",
+                "recalculated": False,
+            })
+            if duplicates:
+                analysis.update({
+                    "duplicate_cards": duplicates,
+                    "hero_observation": list(self.hero_cards),
+                    "hero_cards": list(self.last_analysis["hero_cards"]) if self.last_analysis else [],
+                    "action": "AGUARDANDO RECONHECIMENTO DAS CARTAS",
+                    "reason": f"Cartas duplicadas na captura: {', '.join(duplicates)}; estado conhecido preservado.",
+                })
+            if financial_error:
+                analysis.update({
+                    "financial_valid": False,
+                    "financial_observation": dict(hero_stack=self.hero_stack, pot_size=pot_size, bet_to_call=bet_to_call),
+                    "action": "AGUARDANDO CONTEXTO FINANCEIRO",
+                    "reason": financial_error,
+                })
+            self._with_action_context(analysis, context)
+            if show_dashboard:
+                self.render_dashboard(analysis)
+            return analysis
 
         # 2. Otimização de Performance: Verifica se houve alteração na mesa
         last_pot = self.last_analysis.get("pot_size") if self.last_analysis else None
@@ -467,6 +653,15 @@ class PokerAnalyticsApp:
 
     def render_dashboard(self, a: Dict[str, Any], cached: bool = False):
         """Renderiza o painel visual formatado no terminal com cores ANSI."""
+        if a.get("observation_valid") is False:
+            print("\n[CAPTURA INCERTA - SEM RECOMENDAÇÃO ATUAL]")
+            print(f"Último estado/board válido: {a['state']} | {a['board']}")
+            if a.get("financial_valid") is False:
+                print(f"Valores recebidos (não validados): {a['financial_observation']}")
+            else:
+                print(f"Leitura recebida ({a['board_read_status']}): {a['board_observation']}")
+            print(a["action_status"])
+            return
         C_RESET = "\033[0m"
         C_BOLD = "\033[1m"
         C_CYAN = "\033[96m"
@@ -564,7 +759,7 @@ class PokerAnalyticsApp:
         print(f"╚{sep_double}╝\n")
 
 
-def run_live(poll_interval: float = POLL_INTERVAL):
+def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
     """Executa o Poker Analytics Engine em modo assistente ao vivo (tempo real)."""
     C_RESET = "\033[0m"
     C_BOLD = "\033[1m"
@@ -605,6 +800,7 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 isinstance(hero_detected, list)
                 and len(hero_detected) == 2
                 and all(c and c != "Desconhecida" for c in hero_detected)
+                and not PokerHandStateMachine.find_duplicate_cards(hero_detected)
             )
 
             already_has_valid_hand = (
@@ -618,43 +814,6 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 )
             )
 
-            # QUEBRA DE LOCK POR AUSÊNCIA (A Prova de Balas):
-            # Roda INDEPENDENTE de ser o turno do Hero. Se a carta sumiu da mesa (fold ou fim da mão), quebra a trava.
-            if len(hero_detected) == 0:
-                app.hero_absence_frames = getattr(app, 'hero_absence_frames', 0) + 1
-                if app.hero_absence_frames >= 8:
-                    if already_has_valid_hand:
-                        print("\n[INFO] Cartas do Hero sumiram da tela. Mão encerrada ou foldada. Limpando a trava.")
-                        app.hero_cards = []
-                        already_has_valid_hand = False
-                        app.state_machine.reset_hand()
-                        app.last_analysis = None
-                        app.hero_position = "Desconhecida"
-                if app.hero_absence_frames >= 25 and not already_has_valid_hand:
-                    app.hero_coords = None
-            else:
-                app.hero_absence_frames = 0
-
-            # DETECÇÃO DE MUDANÇA DE CARTAS (Novo Pre-Flop Imediato):
-            if has_valid_detected and already_has_valid_hand and hero_detected != app.hero_cards:
-                detected_board_now = detect_board(frame, verbose=False)
-                physical_board = PokerHandStateMachine.filter_valid_cards(detected_board_now)
-                if len(app.state_machine.board) == 0 and len(physical_board) == 0:
-                    app.hero_cards_changed_frames = getattr(app, 'hero_cards_changed_frames', 0) + 1
-                    if app.hero_cards_changed_frames >= 2:
-                        print(f"\n[INFO] Cartas do Hero mudaram de {app.hero_cards} para {hero_detected}. Nova rodada detectada!")
-                        app.hero_cards = hero_detected
-                        app._new_hand_hero_cards_set = True
-                        app.hero_cards_changed_frames = 0
-                        app.state_machine.reset_hand()
-                        app.state_machine.update_board([], has_hero_cards=True)
-                        app.last_analysis = None
-                        app.hero_position = "Desconhecida"
-                else:
-                    app.hero_cards_changed_frames = 0
-            else:
-                app.hero_cards_changed_frames = 0
-
             # IRON LOCK IMEDIATO (1 frame): Trava as cartas do Hero assim que forem identificadas na tela,
             # mesmo enquanto o Hero ainda aguarda sua vez de jogar!
             if has_valid_detected and not already_has_valid_hand:
@@ -663,6 +822,21 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 app.hero_cards_stable_frames = 1
                 app._new_hand_hero_cards_set = True
                 already_has_valid_hand = True
+
+            # O ciclo da mão não depende de haver botões ativos nem de ler CALL.
+            detected_cards = detect_board(frame, verbose=False)
+            observed_pot = extract_pot(frame, default_value=None, verbose=False)
+            hand_status = app.observe_hand(hero_detected, detected_cards, observed_pot, debug=debug_hands)
+            if hand_status == "UNCERTAIN":
+                app.total_frames_processed += 1
+                app.total_uncertain_frames = getattr(app, "total_uncertain_frames", 0) + 1
+                detail = "MUDANÇA DO HERO SEM NOVA MÃO CONFIRMADA" if has_valid_detected and hero_detected != app.hero_cards else "CICLO DA MÃO NÃO CONFIRMADO"
+                if "duplicadas" in app.last_hand_observation["motivo"]:
+                    detail = app.last_hand_observation["motivo"].upper()
+                sys.stdout.write(f"\r{C_YELLOW}[CAPTURA INCERTA - {detail}]{C_RESET}   ")
+                sys.stdout.flush()
+                time.sleep(poll_interval)
+                continue
 
             # Se a máquina está em WAITING_HAND e não há cartas válidas, mantém status limpo aguardando próxima mão
             if app.state_machine.current_state == HandState.WAITING_HAND and not already_has_valid_hand:
@@ -699,32 +873,17 @@ def run_live(poll_interval: float = POLL_INTERVAL):
             except Exception:
                 app.num_opponents = DEFAULT_NUM_OPPONENTS
 
-            detected_cards = detect_board(frame, verbose=False)
-
-            pot_size = extract_pot(frame, verbose=False)
-            if pot_size <= 0:
-                pot_size = app.last_analysis.get("pot_size", 85.0) if app.last_analysis else 85.0
+            pot_size = observed_pot
             
             new_position = extract_hero_position(frame, verbose=False)
             if new_position != "Desconhecida" and app.hero_position == "Desconhecida":
                 app.hero_position = new_position
 
-            # DETECÇÃO EXPLÍCITA DE NOVA MÃO (Especial para Folds no Pre-Flop):
-            # Se a mesa está vazia e o pote caiu pela metade, com certeza é uma nova rodada.
-            last_pot = app.last_analysis.get("pot_size", 0) if app.last_analysis else 0
-            if len(detected_cards) == 0 and last_pot > 0 and pot_size < last_pot * 0.5:
-                print(f"[INFO] Pote caiu de {last_pot} para {pot_size}. Nova rodada!")
-                if not has_valid_detected:
-                    app.hero_cards = []
-                    already_has_valid_hand = False
-                app.last_analysis = None
-                app.state_machine.reset_hand()
-                app.hero_position = "Desconhecida"
-
             app.hero_stack = extract_hero_stack(
                 frame,
                 last_stack=app.hero_stack,
-                hero_coords=getattr(app, 'hero_coords', None)
+                hero_coords=getattr(app, 'hero_coords', None),
+                require_confirmation=True,
             )
             app.process_cards(
                 detected_cards=detected_cards,
@@ -733,7 +892,6 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 show_dashboard=True,
                 action_context=turn_info,
             )
-
             time.sleep(poll_interval)
 
     except KeyboardInterrupt:
@@ -744,14 +902,16 @@ def run_live(poll_interval: float = POLL_INTERVAL):
         print("MÉTRICAS DA SESSÃO AO VIVO:")
         print(f"  • Total de Ciclos Processados:       {app.total_frames_processed}")
         print(f"  • Recálculos Monte Carlo Executados:  {app.total_recalculations}")
-        print(f"  • Ciclos Otimizados por Cache:       {app.total_frames_processed - app.total_recalculations}")
+        uncertain = getattr(app, "total_uncertain_frames", 0)
+        print(f"  • Capturas com Contexto Incerto:     {uncertain}")
+        print(f"  • Ciclos Otimizados por Cache:       {app.total_frames_processed - app.total_recalculations - uncertain}")
         print("=" * 83 + "\n")
 
 
 def main():
     print("=" * 83)
     print("POKER ANALYTICS ENGINE (PAE) - SUÍTE INTEGRADA DE VALIDAÇÃO ARQUITETURAL")
-    print("Simulação do ciclo de vida: WAITING_HAND -> FLOP -> TURN -> RIVER -> PRE_FLOP")
+    print("Simulação do ciclo de vida: WAITING_HAND -> PRE_FLOP -> FLOP -> TURN -> RIVER")
     print("=" * 83 + "\n")
 
     app = PokerAnalyticsApp(
@@ -810,10 +970,7 @@ def main():
         print("\n" + "-" * 83)
         print("[PASSO 5] Processando captura real da mesa de 6 jogadores (mesa_6.png)...")
         app.auto_detect_hero = True
-        app.process_cards(
-            detected_cards=["Vazio", "Vazio", "Vazio", "Vazio", "Vazio"],
-            show_dashboard=False
-        )
+        app.reset_hand(reason="Reinicialização para captura independente: mesa_6.png")
         app.process_frame(
             frame_or_path=mesa_6_path,
             pot_size=None,
@@ -829,10 +986,7 @@ def main():
         print("\n" + "-" * 83)
         print("[PASSO 6] Processando mesa_turno.png (Turno Ativo do Hero - Check/Passo)...")
         app.auto_detect_hero = True
-        app.process_cards(
-            detected_cards=["Vazio", "Vazio", "Vazio", "Vazio", "Vazio"],
-            show_dashboard=False
-        )
+        app.reset_hand(reason="Reinicialização para captura independente: mesa_turno.png")
         app.process_frame(
             frame_or_path=mesa_turno_path,
             pot_size=None,
@@ -886,7 +1040,9 @@ def main():
     print("MÉTRICAS FINAIS DO SISTEMA INTEGRADO:")
     print(f"  • Total de Ciclos Processados:      {app.total_frames_processed}")
     print(f"  • Recálculos Monte Carlo Executados: {app.total_recalculations}")
-    print(f"  • Ciclos Otimizados por Cache:      {app.total_frames_processed - app.total_recalculations}")
+    uncertain = getattr(app, "total_uncertain_frames", 0)
+    print(f"  • Capturas com Contexto Incerto:    {uncertain}")
+    print(f"  • Ciclos Otimizados por Cache:      {app.total_frames_processed - app.total_recalculations - uncertain}")
     print("=" * 83 + "\n")
 
 
@@ -899,6 +1055,6 @@ if __name__ == "__main__":
                     poll = float(sys.argv[i + 1])
                 except ValueError:
                     pass
-        run_live(poll_interval=poll)
+        run_live(poll_interval=poll, debug_hands="--debug-hands" in sys.argv)
     else:
         main()

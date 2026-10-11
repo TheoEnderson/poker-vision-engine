@@ -56,9 +56,9 @@ def _resolve_image_input(image_input: Union[str, Path, np.ndarray]) -> Optional[
 def extract_pot(
     image_path_or_frame: Union[str, Path, np.ndarray] = "mesa_6.png",
     pot_roi: Optional[Dict[str, int]] = None,
-    default_value: float = 0.0,
+    default_value: Optional[float] = 0.0,
     verbose: bool = True
-) -> float:
+) -> Optional[float]:
     """
     Extrai numericamente o valor do pote atual da mesa utilizando Visão Computacional e OCR.
     """
@@ -121,6 +121,8 @@ def extract_pot(
         else:
             pot_value = default_value
 
+    if pot_value is None:
+        return default_value
     if pot_value > MAX_REALISTIC_POT:
         if verbose:
             print(f"[AVISO OCR] Leitura do Pote exorbitante ({pot_value}). Retornando valor seguro anterior.")
@@ -298,10 +300,12 @@ def detect_turn_and_bet_to_call(
     return result
 
 
-def parse_badge_crop(badge_crop: np.ndarray) -> Optional[float]:
+def parse_badge_crop(badge_crop: np.ndarray, require_confirmation: bool = False) -> Optional[float]:
     """
     Extrai o valor numérico de fichas da região recortada do badge do Hero.
     Suporta tanto texto padrão (branco/ouro) quanto texto destacado na vez do jogador (verde neon).
+    Modo confirmado exige concordância entre dois pré-processamentos; divergência
+    ou leitura isolada retorna None. Não escolhe automaticamente o maior valor.
     """
     if badge_crop is None or badge_crop.size == 0:
         return None
@@ -312,6 +316,26 @@ def parse_badge_crop(badge_crop: np.ndarray) -> Optional[float]:
         lines = text.strip().split("\n")
         # Analisa de baixo para cima (fichas ficam na linha inferior do badge)
         for line in reversed(lines):
+            if require_confirmation:
+                # Dígitos fragmentados ("241 5") não autorizam selecionar apenas "5".
+                if not re.fullmatch(r"\s*\d+(?:[.,]\d+)*\s*", line):
+                    continue
+                parts = re.split(r"[.,]", line.strip())
+                if len(parts) > 1:
+                    if len(parts) > 2 and (len(parts[0]) > 3 or any(len(p) != 3 for p in parts[1:-1])):
+                        continue
+                    if len(parts[-1]) in (1, 2):
+                        raw = "".join(parts[:-1]) + "." + parts[-1]
+                    elif len(parts[-1]) == 3 and len(parts[0]) <= 3:
+                        raw = "".join(parts)
+                    else:
+                        continue
+                else:
+                    raw = parts[0]
+                value = float(raw)
+                if math.isfinite(value) and 0 <= value < 50_000_000:
+                    return value
+                continue
             nums = re.findall(r"\b\d+(?:[.,]\d+)*\b", line)
             if nums:
                 raw = nums[-1].replace(",", "").replace(".", "")
@@ -323,34 +347,36 @@ def parse_badge_crop(badge_crop: np.ndarray) -> Optional[float]:
                     continue
         return None
 
-    # Método 1: OCR direto em BGR (rápido, ideal para números brancos/ouro no badge)
-    v1 = extract_num(pytesseract.image_to_string(badge_crop))
-    if v1 is not None:
-        return v1
+    def readings():
+        # Mesmas rotas visuais existentes; o modo legado mantém o retorno rápido.
+        yield extract_num(pytesseract.image_to_string(badge_crop))
+        if len(badge_crop.shape) == 3:
+            g = cv2.resize(badge_crop[:, :, 1], None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
+            yield extract_num(pytesseract.image_to_string(g))
 
-    # Método 2: OCR no canal verde com upscale Lanczos (ideal para highlight verde neon do turno)
-    if len(badge_crop.shape) == 3:
-        g = cv2.resize(badge_crop[:, :, 1], None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
-        v2 = extract_num(pytesseract.image_to_string(g))
-        if v2 is not None:
-            return v2
+        bh, bw = badge_crop.shape[:2]
+        bottom = badge_crop[int(bh * 0.38):, :]
+        bgray = cv2.cvtColor(bottom, cv2.COLOR_BGR2GRAY) if len(bottom.shape) == 3 else bottom
+        up = cv2.resize(bgray, None, fx=3, fy=3, interpolation=cv2.INTER_LANCZOS4)
+        for th in [50, 60, 75, 90]:
+            _, b = cv2.threshold(up, th, 255, cv2.THRESH_BINARY)
+            pad = cv2.copyMakeBorder(b, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=0)
+            for psm in [6, 7, 11]:
+                txt = pytesseract.image_to_string(
+                    pad,
+                    config=f"--psm {psm} -c tessedit_char_whitelist={OCR_WHITELIST_DIGITS}"
+                ).strip()
+                yield extract_num(txt)
 
-    # Método 3: Binarização na metade inferior (área exclusiva do stack de fichas)
-    bh, bw = badge_crop.shape[:2]
-    bottom = badge_crop[int(bh * 0.38):, :]
-    bgray = cv2.cvtColor(bottom, cv2.COLOR_BGR2GRAY) if len(bottom.shape) == 3 else bottom
-    up = cv2.resize(bgray, None, fx=3, fy=3, interpolation=cv2.INTER_LANCZOS4)
-    for th in [50, 60, 75, 90]:
-        _, b = cv2.threshold(up, th, 255, cv2.THRESH_BINARY)
-        pad = cv2.copyMakeBorder(b, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=0)
-        for psm in [6, 7, 11]:
-            txt = pytesseract.image_to_string(
-                pad,
-                config=f"--psm {psm} -c tessedit_char_whitelist={OCR_WHITELIST_DIGITS}"
-            ).strip()
-            v3 = extract_num(txt)
-            if v3 is not None:
-                return v3
+    candidate = None
+    for value in readings():
+        if value is None:
+            continue
+        if not require_confirmation:
+            return value
+        if candidate is not None:
+            return value if value == candidate else None
+        candidate = value
 
     return None
 
@@ -359,18 +385,20 @@ def extract_hero_stack(
     image_path_or_frame: Union[str, Path, np.ndarray],
     last_stack: float = 0.0,
     identifier: str = HERO_IDENTIFIER,
-    hero_coords: Optional[Dict[str, int]] = None
-) -> float:
+    hero_coords: Optional[Dict[str, int]] = None,
+    require_confirmation: bool = False,
+) -> Optional[float]:
     """
     Extrai o stack dinâmico do Hero na mesa (valor numérico no badge do jogador).
-    Utiliza cache de coordenadas do badge para garantir tempo de execução sub-150ms.
+    Utiliza cache de coordenadas do badge para evitar buscas completas a cada captura.
     Suporta leitura em repouso e durante o turno ativo (destaque verde neon).
+    Com require_confirmation=True, falha/divergência retorna None, nunca last_stack.
     """
     global last_hero_name_coords
 
     img = _resolve_image_input(image_path_or_frame)
     if img is None:
-        return last_stack
+        return None if require_confirmation else last_stack
 
     h, w = img.shape[:2]
     scale = h / 1080.0
@@ -379,7 +407,7 @@ def extract_hero_stack(
     if last_hero_name_coords is not None:
         bx1, by1, bx2, by2 = last_hero_name_coords
         if 0 <= by1 < by2 <= h and 0 <= bx1 < bx2 <= w:
-            val = parse_badge_crop(img[by1:by2, bx1:bx2])
+            val = parse_badge_crop(img[by1:by2, bx1:bx2], require_confirmation=require_confirmation)
             if val is not None:
                 return val
         # Se falhou, invalida o cache para refazer a busca
@@ -395,7 +423,7 @@ def extract_hero_stack(
         cx2 = min(w, hx + hw + int(50 * scale))
         cy1 = max(0, hy - int(30 * scale))
         cy2 = min(h, hy + hh + int(90 * scale))
-        val = parse_badge_crop(img[cy1:cy2, cx1:cx2])
+        val = parse_badge_crop(img[cy1:cy2, cx1:cx2], require_confirmation=require_confirmation)
         if val is not None:
             last_hero_name_coords = (cx1, cy1, cx2, cy2)
             return val
@@ -429,12 +457,12 @@ def extract_hero_stack(
             bx2 = min(w, tx + tw + int(60 * scale))
             by1 = max(0, ty - int(15 * scale))
             by2 = min(h, ty + th + int(38 * scale))
-            val = parse_badge_crop(img[by1:by2, bx1:bx2])
+            val = parse_badge_crop(img[by1:by2, bx1:bx2], require_confirmation=require_confirmation)
             if val is not None:
                 last_hero_name_coords = (bx1, by1, bx2, by2)
                 return val
 
-    return last_stack
+    return None if require_confirmation else last_stack
 
 
 def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], verbose: bool = False) -> str:
