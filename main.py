@@ -89,6 +89,7 @@ class PokerAnalyticsApp:
         self.last_analysis: Optional[Dict[str, Any]] = None
         self.total_frames_processed: int = 0
         self.total_recalculations: int = 0
+        self._new_hand_hero_cards_set: bool = False
         
         from src.engine.range_model import OpponentModel
         from src.engine.evaluator import FULL_DECK
@@ -132,6 +133,7 @@ class PokerAnalyticsApp:
                     
                 if self.hero_cards_stable_frames >= 1:
                     self.hero_cards = hero_detected
+                    self._new_hand_hero_cards_set = True
             elif not already_has_valid_hand:
                 self.hero_cards_stable_frames = 0
                 self.hero_cards = []
@@ -190,12 +192,16 @@ class PokerAnalyticsApp:
                 self.last_analysis = None
                 self.hero_position = "Desconhecida"
             elif current_state == HandState.PRE_FLOP and prev_state not in (HandState.PRE_FLOP, HandState.WAITING_HAND):
-                self.hero_cards = []
+                if not getattr(self, '_new_hand_hero_cards_set', False):
+                    self.hero_cards = []
+                self._new_hand_hero_cards_set = False
                 self.opponent_model.reset()
                 self.last_analysis = None
                 self.hero_position = "Desconhecida"
             elif len(current_board) == 0 and len(self.last_board) > 0:
-                self.hero_cards = []
+                if not getattr(self, '_new_hand_hero_cards_set', False):
+                    self.hero_cards = []
+                self._new_hand_hero_cards_set = False
                 self.opponent_model.reset()
                 self.last_analysis = None
                 self.hero_position = "Desconhecida"
@@ -499,39 +505,8 @@ def run_live(poll_interval: float = POLL_INTERVAL):
             frame = grab_screen()
             hero_detected = find_and_detect_hero_cards(frame, verbose=False)
 
-            # QUEBRA DE LOCK POR AUSÊNCIA (A Prova de Balas):
-            # Roda INDEPENDENTE de ser o turno do Hero. Se a carta sumiu da mesa (fold ou fim da mão), quebra a trava.
-            if len(hero_detected) == 0:
-                app.hero_absence_frames = getattr(app, 'hero_absence_frames', 0) + 1
-                if app.hero_absence_frames >= 8:
-                    if getattr(app, 'hero_cards', []) != []:
-                        print("[INFO] Cartas do Hero sumiram da tela. Mão encerrada ou foldada. Limpando a trava.")
-                        app.hero_cards = []
-                        app.state_machine.reset_hand()
-                        app.last_analysis = None
-                        app.hero_position = "Desconhecida"
-            else:
-                app.hero_absence_frames = 0
-
-            turn_info = detect_turn_and_bet_to_call(frame, verbose=False)
-
-            if not turn_info["is_hero_turn"]:
-                sys.stdout.write(f"\r{C_YELLOW}[AGUARDANDO SUA VEZ DE JOGAR...]{C_RESET}   ")
-                sys.stdout.flush()
-                time.sleep(poll_interval)
-                continue
-
-            sys.stdout.write("\r" + " " * 60 + "\r")
-            sys.stdout.flush()
-
-            try:
-                active_opponents = detect_active_opponents(frame)
-                app.num_opponents = active_opponents
-            except Exception:
-                app.num_opponents = DEFAULT_NUM_OPPONENTS
-
             has_valid_detected = (
-                hero_detected
+                isinstance(hero_detected, list)
                 and len(hero_detected) == 2
                 and all(c and c != "Desconhecida" for c in hero_detected)
             )
@@ -546,7 +521,22 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                     for c in app.hero_cards
                 )
             )
-            
+
+            # QUEBRA DE LOCK POR AUSÊNCIA (A Prova de Balas):
+            # Roda INDEPENDENTE de ser o turno do Hero. Se a carta sumiu da mesa (fold ou fim da mão), quebra a trava.
+            if len(hero_detected) == 0:
+                app.hero_absence_frames = getattr(app, 'hero_absence_frames', 0) + 1
+                if app.hero_absence_frames >= 8:
+                    if already_has_valid_hand:
+                        print("\n[INFO] Cartas do Hero sumiram da tela. Mão encerrada ou foldada. Limpando a trava.")
+                        app.hero_cards = []
+                        already_has_valid_hand = False
+                        app.state_machine.reset_hand()
+                        app.last_analysis = None
+                        app.hero_position = "Desconhecida"
+            else:
+                app.hero_absence_frames = 0
+
             # DETECÇÃO DE MUDANÇA DE CARTAS (Novo Pre-Flop Imediato):
             if has_valid_detected and already_has_valid_hand and hero_detected != app.hero_cards:
                 if len(app.state_machine.board) == 0:
@@ -554,6 +544,7 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                     if app.hero_cards_changed_frames >= 2:
                         print(f"\n[INFO] Cartas do Hero mudaram de {app.hero_cards} para {hero_detected}. Nova rodada detectada!")
                         app.hero_cards = hero_detected
+                        app._new_hand_hero_cards_set = True
                         app.hero_cards_changed_frames = 0
                         app.state_machine.reset_hand()
                         app.last_analysis = None
@@ -563,19 +554,32 @@ def run_live(poll_interval: float = POLL_INTERVAL):
             else:
                 app.hero_cards_changed_frames = 0
 
-            # Iron Lock Estrito: Só atualiza se ainda não tivermos uma mão sólida
+            # IRON LOCK IMEDIATO (1 frame): Trava as cartas do Hero assim que forem identificadas na tela,
+            # mesmo enquanto o Hero ainda aguarda sua vez de jogar!
             if has_valid_detected and not already_has_valid_hand:
-                if getattr(app, 'last_detected_hero', None) == hero_detected:
-                    app.hero_cards_stable_frames = getattr(app, 'hero_cards_stable_frames', 0) + 1
-                else:
-                    app.hero_cards_stable_frames = 1
-                    app.last_detected_hero = hero_detected
-                    
-                if app.hero_cards_stable_frames >= 2:
-                    app.hero_cards = hero_detected
-            elif not already_has_valid_hand:
-                app.hero_cards_stable_frames = 0
-                app.hero_cards = []
+                app.hero_cards = hero_detected
+                app.last_detected_hero = hero_detected
+                app.hero_cards_stable_frames = 1
+                app._new_hand_hero_cards_set = True
+                already_has_valid_hand = True
+
+            turn_info = detect_turn_and_bet_to_call(frame, verbose=False)
+
+            if not turn_info["is_hero_turn"]:
+                hand_str = f" | Mão travada: {app.hero_cards}" if already_has_valid_hand else ""
+                sys.stdout.write(f"\r{C_YELLOW}[AGUARDANDO SUA VEZ DE JOGAR...]{hand_str}{C_RESET}   ")
+                sys.stdout.flush()
+                time.sleep(poll_interval)
+                continue
+
+            sys.stdout.write("\r" + " " * 75 + "\r")
+            sys.stdout.flush()
+
+            try:
+                active_opponents = detect_active_opponents(frame)
+                app.num_opponents = active_opponents
+            except Exception:
+                app.num_opponents = DEFAULT_NUM_OPPONENTS
 
             detected_cards = detect_board(frame, verbose=False)
 
@@ -591,9 +595,10 @@ def run_live(poll_interval: float = POLL_INTERVAL):
             # Se a mesa está vazia e o pote caiu pela metade, com certeza é uma nova rodada.
             last_pot = app.last_analysis.get("pot_size", 0) if app.last_analysis else 0
             if len(detected_cards) == 0 and last_pot > 0 and pot_size < last_pot * 0.5:
-                print(f"[INFO] Pote caiu de {last_pot} para {pot_size}. Nova rodada! Limpando Hero Cards.")
-                app.hero_cards = []
-                already_has_valid_hand = False
+                print(f"[INFO] Pote caiu de {last_pot} para {pot_size}. Nova rodada!")
+                if not has_valid_detected:
+                    app.hero_cards = []
+                    already_has_valid_hand = False
                 app.last_analysis = None
                 app.state_machine.reset_hand()
                 app.hero_position = "Desconhecida"
