@@ -112,7 +112,14 @@ class PokerAnalyticsApp:
         """Processa um frame de vídeo ou imagem estática da mesa."""
         # 1. Extração dinâmica da mão do Hero
         if self.auto_detect_hero:
-            hero_detected = find_and_detect_hero_cards(frame_or_path, verbose=False)
+            hero_detected, detected_box = find_and_detect_hero_cards(
+                frame_or_path,
+                verbose=False,
+                hero_coords_hint=getattr(self, 'hero_coords', None),
+                return_coords=True,
+            )
+            if detected_box is not None:
+                self.hero_coords = detected_box
             has_valid_detected = (
                 hero_detected
                 and len(hero_detected) == 2

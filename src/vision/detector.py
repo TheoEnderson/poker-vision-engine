@@ -406,6 +406,50 @@ def detect_board(
     return detected_board
 
 
+def _hero_suit_region(glyph_mask: np.ndarray, red_suit: bool = True) -> Optional[np.ndarray]:
+    """Localiza o naipe abaixo do rank, sem truncar pela altura visível da carta.
+
+    O painel do jogador pode cobrir o fundo da carta. A altura visível não é,
+    portanto, uma referência segura para o fim do símbolo do naipe.
+    """
+    height, width = glyph_mask.shape
+    corner = glyph_mask[:, :max(1, int(width * 0.4))].astype(np.uint8) * 255
+    contours, _ = cv2.findContours(corner, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    boxes = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        # Descarta pedaços dos desenhos centrais que atravessam a coluna.
+        if cv2.contourArea(contour) > 5 and x > 0 and x + w < corner.shape[1]:
+            boxes.append((x, y, w, h))
+    boxes.sort(key=lambda box: (box[1], box[0]))
+    if not boxes:
+        return None
+
+    # Um rank como '10' pode ter dois componentes na mesma faixa vertical.
+    rank_bottom = boxes[0][1] + boxes[0][3]
+    rank_boxes = [box for box in boxes if box[1] < rank_bottom]
+    rank_bottom = max(y + h for x, y, w, h in rank_boxes)
+    if not red_suit:
+        # Em cartas pretas, a antialiasing do naipe pode unir seu componente à
+        # borda cinza inferior. Busca o template abaixo do rank sem exigir que
+        # o contorno esteja isolado da borda (nem cortar sua base em 75%).
+        region = corner[rank_bottom + 1:, :]
+        if not region.size:
+            return None
+        return cv2.copyMakeBorder(region, 2, 2, 2, 2, cv2.BORDER_CONSTANT)
+    suit_boxes = [box for box in boxes if box[1] >= rank_bottom]
+    if not suit_boxes:
+        return None
+    x, y, w, h = suit_boxes[0]
+    # Copas/ouros podem terminar exatamente no recorte. Aceita a ponta estreita,
+    # mas mantém incerto um corte largo pelo corpo do símbolo.
+    if y + h >= height:
+        bottom_width = np.count_nonzero(corner[-1, x:x + w])
+        if bottom_width > max(2, w * 0.3):
+            return None
+    return cv2.copyMakeBorder(corner[y:y + h, x:x + w], 2, 2, 2, 2, cv2.BORDER_CONSTANT)
+
+
 def find_and_detect_hero_cards(
     image_path_or_frame: Union[str, Path, np.ndarray] = "mesa_6.png",
     board_coords: Optional[Dict[str, int]] = None,
@@ -417,7 +461,8 @@ def find_and_detect_hero_cards(
     """
     Localiza dinamicamente as duas cartas abertas do Hero em qualquer posição da mesa
     (6-max ou 9-max), ignorando as cartas comunitárias do board.
-    Se hero_coords_hint for fornecido, foca no assento do Hero e ignora cartas de oponentes no Showdown.
+    Se hero_coords_hint for fornecido, foca no assento indicado sem tentar outro
+    jogador quando a leitura falha. Sem assento, múltiplas mãos são ambíguas.
     """
     if board_coords is None:
         board_coords = {"top": 415, "left": 734, "width": 449, "height": 109}
@@ -428,13 +473,13 @@ def find_and_detect_hero_cards(
     if img is None:
         if verbose:
             print(f"[ERRO] Não foi possível carregar a imagem de: {image_path_or_frame}")
-        return []
+        return ([], None) if return_coords else []
 
     h, w = img.shape[:2]
     if w < 600 or h < 400:
         if verbose:
             print("[INFO] Imagem fornecida é um recorte do board, não uma mesa completa com assentos.")
-        return []
+        return ([], None) if return_coords else []
 
     bt = board_coords.get("top", 415)
     bl = board_coords.get("left", 734)
@@ -477,19 +522,21 @@ def find_and_detect_hero_cards(
         h, s, v = shsv[:, :, 0], shsv[:, :, 1], shsv[:, :, 2]
         red_mask = ((h < 15) | (h > 165)) & (s > 90) & (v > 80)
         sbin = ((black_mask | red_mask).astype(np.uint8)) * 255
+        rank_cutoff = max(36, int(slot_img.shape[0] * 0.45))
+        best_r, best_r_score = match_glyph_multiscale(sbin[:rank_cutoff, :], ranks)
 
-        sh, sw = slot_img.shape[:2]
-        rank_cutoff = max(36, int(sh * 0.45))
-        rank_reg = sbin[:rank_cutoff, :]
-        best_r, best_r_score = match_glyph_multiscale(rank_reg, ranks)
+        corner = slot_img[:, :max(1, int(slot_img.shape[1] * 0.4))]
+        candidate_suits = filter_suits_by_color(corner, suits)
+        red_suit = set(candidate_suits).issubset({"h", "d"})
+        glyph_mask = red_mask if red_suit else black_mask
+        suit_reg = _hero_suit_region(glyph_mask, red_suit=red_suit)
+        # Não compara um pedaço de coração com o template inteiro de ouros.
+        if suit_reg is None:
+            best_s, best_s_score = None, -1.0
+        else:
+            best_s, best_s_score = match_glyph_multiscale(suit_reg, candidate_suits)
 
-        suit_start = min(16, int(sh * 0.2))
-        suit_end = max(35, int(sh * 0.75))
-        candidate_suits = filter_suits_by_color(slot_img[suit_start:suit_end, :], suits)
-        suit_reg = sbin[suit_start:suit_end, :]
-        best_s, best_s_score = match_glyph_multiscale(suit_reg, candidate_suits)
-
-        local_thresh = min(threshold, 0.55)
+        local_thresh = threshold
         card_str = (
             f"{best_r}{best_s}"
             if (best_r_score >= local_thresh and best_s_score >= local_thresh)
@@ -521,9 +568,20 @@ def find_and_detect_hero_cards(
         # Prioriza e filtra candidatos próximos ao assento do Hero (< 250px),
         # impedindo que cartas de oponentes expostas no Showdown sejam confundidas com as do Hero
         close_boxes = [b for b in candidate_boxes if ((b[0] - hl) ** 2 + (b[1] - ht) ** 2) <= (250 ** 2)]
+        if hero_coords_hint.get("width", 0) > 0 and hero_coords_hint.get("height", 0) > 0:
+            hint_right = hl + hero_coords_hint["width"]
+            hint_bottom = ht + hero_coords_hint["height"]
+            # Uma caixa conhecida é evidência mais forte que a tolerância de 250px.
+            close_boxes = [b for b in close_boxes if (
+                max(0, min(hint_right, b[0] + b[2]) - max(hl, b[0]))
+                * max(0, min(hint_bottom, b[1] + b[3]) - max(ht, b[1]))
+            ) >= 0.5 * min(
+                hero_coords_hint["width"] * hero_coords_hint["height"], b[2] * b[3]
+            )]
         if close_boxes:
             close_boxes.sort(key=lambda b: (b[0] - hl) ** 2 + (b[1] - ht) ** 2)
-            candidate_boxes = close_boxes
+            # O assento mais próximo continua sendo o alvo mesmo se estiver ilegível.
+            candidate_boxes = close_boxes[:1]
         else:
             if verbose:
                 print("[INFO] Nenhuma carta aberta detectada no assento conhecido do Hero.")
@@ -536,6 +594,7 @@ def find_and_detect_hero_cards(
 
     best_cards = []
     best_box = None
+    best_res = None
     last_res = None
 
     for box in candidate_boxes:
@@ -550,9 +609,20 @@ def find_and_detect_hero_cards(
         last_res = (box, slot1, slot2, c1_str, r1, sr1, s1, ss1, c2_str, r2, sr2, s2, ss2)
 
         if c1_str != "Desconhecida" and c2_str != "Desconhecida":
+            if best_box is not None:
+                # Caixas duplicadas/sobrepostas podem representar o mesmo par.
+                bx, by, bw, bh = best_box
+                overlap = max(0, min(bx + bw, hx + hw) - max(bx, hx)) * max(
+                    0, min(by + bh, hy + hh) - max(by, hy)
+                )
+                if overlap < 0.5 * min(bw * bh, hw * hh):
+                    if verbose:
+                        print("[INFO] Múltiplas mãos abertas sem assento do Hero definido. Retornando [].")
+                    return ([], None) if return_coords else []
+                continue
             best_cards = [c1_str, c2_str]
             best_box = box
-            break
+            best_res = last_res
 
     if not best_cards:
         if last_res:
@@ -569,6 +639,7 @@ def find_and_detect_hero_cards(
     hero_cards = best_cards
 
     if verbose:
+        box, slot1, slot2, c1_str, r1, sr1, s1, ss1, c2_str, r2, sr2, s2, ss2 = best_res
         print("=" * 70)
         print("DETECÇÃO DINÂMICA DA MÃO DO HERO - Poker Analytics")
         print("=" * 70)
