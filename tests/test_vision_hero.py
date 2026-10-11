@@ -160,7 +160,7 @@ class TestHeroRecognition(unittest.TestCase):
             app.process_frame(frame, pot_size=50.0, bet_to_call=0.0, show_dashboard=False)
         self.assertEqual(app.hero_cards, ["4h", "9d"])
         self.assertEqual(app.hero_coords["left"], 1200)
-        process_cards.assert_called_once_with([], 50.0, 0.0, False)
+        process_cards.assert_called_once_with([], 50.0, 0.0, False, action_context=None)
 
     def test_explicit_threshold_is_respected(self):
         frame = cv2.imread(str(SAMPLES_DIR / "mesa_turno.png"))

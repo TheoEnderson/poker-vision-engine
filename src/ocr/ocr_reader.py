@@ -139,71 +139,56 @@ def extract_pot(
 
 
 def parse_action_button_text(raw_text: str) -> Dict[str, Any]:
-    """
-    Interpreta o texto extraído via OCR da região de botões de ação.
-    Implementa heurística robusa para inferência de Aposta a Pagar.
-    """
+    """Interpreta ações explícitas; ausência de valor não significa CHECK."""
     clean = raw_text.strip().upper()
-    
-    if "LEVANTAR" in clean or "SENTAR" in clean:
-        return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING"}
-        
-    # Se explicitamente pudermos dar CHECK/PASSO, o bet_to_call é 0 (ação livre)
-    if "PASSO" in clean or "CHECK" in clean or "PASS" in clean:
-        return {"is_hero_turn": True, "bet_to_call": 0.0, "action_type": "CHECK"}
+    unknown = {"is_hero_turn": False, "bet_to_call": None, "action_type": "UNKNOWN", "available_actions": []}
+    if re.search(r"LEVANTAR|SENTAR|CHECK\s*/\s*FOLD|CHECK\s+ANY|FOLD\s+TO\s+ANY|AUTO", clean):
+        return unknown
 
-    # Extrai TODOS os números contidos na string de botões para achar a Aposta a Pagar
-    numbers = re.findall(r"\d+(?:[.,]\d+)*", clean)
-    valid_nums = []
-    for n in numbers:
-        raw_num = n.replace(",", "").replace(".", "")
-        try:
-            val = float(raw_num)
-            if val > 0:
-                valid_nums.append(val)
-        except ValueError:
-            pass
+    labels = {
+        "CHECK": "CHECK", "PASSO": "CHECK", "PASS": "CHECK",
+        "CALL": "CALL", "PAGO": "CALL", "PAGAR": "CALL",
+        "FOLD": "FOLD", "DESISTO": "FOLD", "DESISTIR": "FOLD",
+        "RAISE": "RAISE", "AUMENTO": "RAISE", "AUMENTAR": "RAISE",
+        "BET": "BET", "APOSTO": "BET", "APOSTAR": "BET",
+        "ALL-IN": "ALL-IN", "ALL IN": "ALL-IN",
+    }
+    matches = list(re.finditer(r"\b(?:" + "|".join(labels) + r")\b", clean))
+    actions = list(dict.fromkeys(labels[m.group()] for m in matches))
+    if not actions or ("CHECK" in actions and "CALL" in actions):
+        return unknown
 
-    # Se há números e NÃO há CHECK, estamos enfrentando uma aposta.
-    # O menor número presente na tela costuma ser a aposta de "Call" 
-    # (enquanto o botão de Raise/Aumentar terá valores maiores).
-    if valid_nums:
-        bet_to_call = min(valid_nums)
-        # Proteção mínima contra ruídos (ex: OCR lendo '1' sozinho)
-        if bet_to_call >= 2.0 or len(valid_nums) > 1:
-            return {"is_hero_turn": True, "bet_to_call": bet_to_call, "action_type": "CALL"}
-
-    # Fallbacks se não acharmos números claros mas vermos palavras de ação
-    if "PAGAR" in clean or "CALL" in clean or "FOLD" in clean or "DESISTIR" in clean:
-        # Significa que é nosso turno, mas não conseguimos ler o valor numérico.
-        # Retornamos None (no futuro, o delta do pote resolve)
-        return {"is_hero_turn": True, "bet_to_call": None, "action_type": "CALL"}
-
-    return {"is_hero_turn": True, "bet_to_call": 0.0, "action_type": "CHECK"}
-
-
-    # Se tivermos que PAGAR/CALL, vamos extrair o valor associado
-    match = re.search(r"(?:PAGAR|CALL)\s*([\d.,]+)", clean)
-    if match:
-        raw_num = match.group(1).replace(",", "").replace(".", "")
-        try:
-            return {"is_hero_turn": True, "bet_to_call": float(raw_num), "action_type": "CALL"}
-        except ValueError:
-            pass
-
-    # Fallback se apenas achar números soltos (assume que o menor valor pode ser o call se for Pagar/Apostar, mas isso é frágil)
-    # Então se tivermos FOLD, provavelmente é nossa vez e temos que pagar algo
-    if "FOLD" in clean or "DESISTIR" in clean:
-        numbers = re.findall(r"\d+(?:[.,]\d+)*", clean)
-        if numbers:
-            # Pega o primeiro número (geralmente Pagar X, Apostar Y. Pagar vem antes)
-            raw_num = numbers[0].replace(",", "").replace(".", "")
-            try:
-                return {"is_hero_turn": True, "bet_to_call": float(raw_num), "action_type": "CALL"}
-            except ValueError:
-                pass
-
-    return {"is_hero_turn": True, "bet_to_call": 0.0, "action_type": "CHECK"}
+    call_values = []
+    for index, match in enumerate(matches):
+        if labels[match.group()] != "CALL":
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(clean)
+        # Só aceita número imediatamente associado ao CALL, nunca ao RAISE.
+        amount = re.fullmatch(r"\s*([$€£]\s*)?(\d+(?:[.,]\d+)*)\s*", clean[match.end():end])
+        if amount:
+            raw = amount.group(2)
+            # Preserva separadores de milhar e permite valores fracionários.
+            parts = re.split(r"[.,]", raw)
+            if len(parts) > 2 and (len(parts[0]) > 3 or any(len(p) != 3 for p in parts[1:-1])):
+                continue
+            if len(parts) > 1 and len(parts[-1]) not in (1, 2, 3):
+                continue
+            if len(parts) > 1 and len(parts[-1]) in (1, 2):
+                raw = "".join(parts[:-1]) + "." + parts[-1]
+            else:
+                raw = "".join(parts)
+            value = float(raw)
+            if math.isfinite(value) and value > 0:
+                call_values.append(value)
+    bet = 0.0 if "CHECK" in actions else None
+    if "CALL" in actions and len(call_values) == 1:
+        bet = call_values[0]
+    return {
+        "is_hero_turn": True,
+        "bet_to_call": bet,
+        "action_type": "CHECK" if "CHECK" in actions else "CALL" if "CALL" in actions else "UNKNOWN",
+        "available_actions": actions,
+    }
 
 
 def detect_turn_and_bet_to_call(
@@ -221,13 +206,13 @@ def detect_turn_and_bet_to_call(
     if img is None:
         if verbose:
             print(f"[ERRO OCR] Não foi possível carregar imagem de: {image_path_or_frame}")
-        return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING"}
+        return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING", "available_actions": []}
 
     h, w = img.shape[:2]
     if w < 600 or h < 400:
         if verbose:
             print("[INFO OCR] Imagem fornecida é um recorte pequeno; botões de ação indisponíveis.")
-        return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING"}
+        return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING", "available_actions": []}
 
     top = action_roi.get("top", 870)
     left = action_roi.get("left", 1200)
@@ -246,7 +231,7 @@ def detect_turn_and_bet_to_call(
 
     panel = img[search_y1:search_y2, search_x1:search_x2]
     if panel.size == 0:
-        return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING"}
+        return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING", "available_actions": []}
 
     b, g, r = cv2.split(panel)
     r_int, g_int, b_int = r.astype(int), g.astype(int), b.astype(int)
@@ -272,13 +257,13 @@ def detect_turn_and_bet_to_call(
             print("=" * 70)
             print("DETECÇÃO DE TURNO DO HERO - Poker Analytics")
             print("=" * 70)
-            print("Status: Botões de ação ausentes na mesa -> Turno de outro jogador (WAITING)")
+            print("Status: Botões de ação não detectados -> Vez do Hero não confirmada (WAITING)")
             print("=" * 70 + "\n")
-        return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING"}
+        return {"is_hero_turn": False, "bet_to_call": 0.0, "action_type": "WAITING", "available_actions": []}
 
     action_buttons.sort(key=lambda b: b[0])
 
-    # Encontra o bounding box global de todos os botões detectados
+    # Mantém cada valor ligado ao seu botão, sem misturar CALL com RAISE/slider.
     x_min = min(b[0] for b in action_buttons)
     y_min = min(b[1] for b in action_buttons)
     x_max = max(b[0] + b[2] for b in action_buttons)
@@ -289,11 +274,15 @@ def detect_turn_and_bet_to_call(
     gw = x_max - x_min
     gh = y_max - y_min
 
-    btn_crop = img[gy : gy + gh, gx : gx + gw]
-    gray = cv2.cvtColor(btn_crop, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
-
-    raw_text = pytesseract.image_to_string(thresh, config="--psm 6")
+    texts = []
+    for bx, by, bw, bh, area in action_buttons:
+        btn_crop = panel[by:by + bh, bx:bx + bw]
+        gray = cv2.cvtColor(btn_crop, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+        text = pytesseract.image_to_string(thresh, config="--psm 6")
+        if parse_action_button_text(text)["is_hero_turn"]:
+            texts.append(text.strip())
+    raw_text = "\n".join(texts)
     result = parse_action_button_text(raw_text)
 
     if verbose:

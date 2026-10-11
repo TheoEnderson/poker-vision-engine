@@ -167,30 +167,68 @@ class PokerAnalyticsApp:
 
         # 3. Leitura do turno e aposta a pagar (bet_to_call) via OCR
         actual_bet = bet_to_call
-        if self.auto_detect_turn and actual_bet is None:
+        turn_info = None
+        if self.auto_detect_turn:
             turn_info = detect_turn_and_bet_to_call(frame_or_path, verbose=False)
-            if turn_info["is_hero_turn"]:
+            if actual_bet is None and turn_info["is_hero_turn"]:
                 actual_bet = turn_info["bet_to_call"]
 
-        if actual_bet is None:
+        if actual_bet is None and not self.auto_detect_turn:
             actual_bet = 30.0
 
         # 4. Detecção das cartas comunitárias do Board
         detected_cards = detect_board(frame_or_path, verbose=False)
-        return self.process_cards(detected_cards, actual_pot, actual_bet, show_dashboard)
+        return self.process_cards(
+            detected_cards, actual_pot, actual_bet, show_dashboard, action_context=turn_info
+        )
+
+    @staticmethod
+    def _with_action_context(analysis: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Preserva a ação do modelo; valida separadamente sua disponibilidade na captura."""
+        analysis["action_context"] = context
+        available = False
+        status = "Turno e ações não verificados."
+        if context:
+            action = analysis["action"]
+            observed = context.get("available_actions", [])
+            bet = context.get("bet_to_call")
+            if not context.get("is_hero_turn"):
+                status = "Vez do Hero não confirmada."
+            elif not analysis.get("recalculated") or analysis.get("bet_to_call") is None:
+                status = "Dados insuficientes para validar uma recomendação."
+            elif action not in observed:
+                status = "Ação do modelo não observada nos botões desta captura."
+            elif action in ("BET", "RAISE", "ALL-IN"):
+                status = "Tipo de ação observado, mas tamanho/limites da aposta não validados."
+            else:
+                available = (
+                    action == "FOLD"
+                    or (action == "CHECK" and context.get("action_type") == "CHECK"
+                        and bet == 0 and analysis["bet_to_call"] == 0)
+                    or (action == "CALL" and bet is not None and bet > 0
+                        and bet == analysis["bet_to_call"] == analysis["recommended_amount"])
+                )
+                status = "Compatível com os botões e o valor observados na captura." if available else "Valor/contexto da ação não confirmado."
+        analysis["action_available"] = available
+        analysis["action_status"] = status
+        return analysis
 
     def process_cards(
         self,
         detected_cards: List[str],
         pot_size: float = 85.0,
-        bet_to_call: float = 30.0,
-        show_dashboard: bool = True
+        bet_to_call: Optional[float] = 30.0,
+        show_dashboard: bool = True,
+        action_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Processa as cartas detectadas na mesa com controle estrito de ciclo de vida,
         mecanismo de cache inteligente e avaliação de Valor Esperado (EV).
         """
         self.total_frames_processed += 1
+        context = dict(action_context) if action_context is not None else None
+        if context is not None:
+            context["available_actions"] = list(context.get("available_actions", []))
 
         # 1. Atualiza a Máquina de Estados Finitos (FSM)
         prev_state = self.last_state
@@ -248,6 +286,7 @@ class PokerAnalyticsApp:
             or (self.hero_position != last_pos)
             or (self.hero_stack != last_stack)
             or (self.num_opponents != last_num_opponents)
+            or (context != (self.last_analysis.get("action_context") if self.last_analysis else None))
         )
 
         hero_is_missing = (
@@ -277,13 +316,14 @@ class PokerAnalyticsApp:
             )
         )
 
-        if not has_valid_hero or current_state == HandState.WAITING_HAND:
+        if not has_valid_hero or current_state == HandState.WAITING_HAND or bet_to_call is None:
+            unknown_call = has_valid_hero and bet_to_call is None
             analysis = {
                 "state": current_state.value,
                 "board": current_board,
-                "hero_cards": [],
+                "hero_cards": list(self.hero_cards) if unknown_call else [],
                 "hero_position": self.hero_position,
-                "hero_hand": "Não identificadas",
+                "hero_hand": "Valor do CALL desconhecido" if unknown_call else "Não identificadas",
                 "pot_size": pot_size,
                 "bet_to_call": bet_to_call,
                 "hero_stack": self.hero_stack,
@@ -294,15 +334,16 @@ class PokerAnalyticsApp:
                 "p_tie": 0.0,
                 "p_lose": 0.0,
                 "ev": 0.0,
-                "action": "AGUARDANDO LEITURA DAS CARTAS",
+                "action": "AGUARDANDO VALOR DO CALL" if unknown_call else "AGUARDANDO LEITURA DAS CARTAS",
                 "recommended_amount": 0.0,
-                "reason": "Cartas do Hero não identificadas com precisão na mesa. Simulação fictícia bloqueada.",
+                "reason": "Valor do CALL não identificado. Não foi presumido CHECK." if unknown_call else "Cartas do Hero não identificadas com precisão na mesa. Simulação fictícia bloqueada.",
                 "sim_time": 0.0,
                 "recalculated": False,
             }
+            self._with_action_context(analysis, context)
             self.last_analysis = analysis
             if show_dashboard:
-                sys.stdout.write(f"\r{C_YELLOW}[AGUARDANDO CARTAS DO HERO / INÍCIO DA PRÓXIMA MÃO...]{C_RESET}   ")
+                sys.stdout.write(f"\r{C_YELLOW}[{analysis['action']}]{C_RESET}   ")
                 sys.stdout.flush()
             return analysis
 
@@ -408,6 +449,8 @@ class PokerAnalyticsApp:
                 "recalculated": False,
             }
 
+        self._with_action_context(analysis, context)
+
         # Grava os dados da simulação no CSV de Machine Learning
         if analysis.get("recalculated") and analysis.get("state") != "WAITING_HAND":
             try:
@@ -470,9 +513,10 @@ class PokerAnalyticsApp:
         )
         print(f"╠{sep_double}╣")
         print(f"║ {C_BOLD}DADOS DA RODADA:{C_RESET}")
+        call_display = f"{a['bet_to_call']:8.1f}" if a["bet_to_call"] is not None else "Desconhecido"
         print(
             f"║   • Pote Atual:        {a['pot_size']:8.1f} fichas   │ "
-            f"• Aposta a Pagar (Call): {a['bet_to_call']:8.1f} fichas"
+            f"• Aposta a Pagar (Call): {call_display} fichas"
         )
         print(
             f"║   • Stack do Hero:     {a['hero_stack']:8.1f} fichas   │ "
@@ -497,9 +541,17 @@ class PokerAnalyticsApp:
         print(f"║ {C_BOLD}ANÁLISE DE RISCO & VALOR ESPERADO (EV):{C_RESET}")
         print(f"║   • EV de Call/Check (Base): {ev_color}{ev_val:+8.2f} fichas{C_RESET}")
         print("║")
-        print(f"║   >>> DECISÃO RECOMENDADA: {action_color}[ {a['action']} ]{C_RESET} ")
+        available = a.get("action_available", False)
+        label = "RECOMENDAÇÃO PARA A CAPTURA" if available else "ANÁLISE INFORMATIVA - AÇÃO DO MODELO"
+        print(f"║   >>> {label}: {action_color}[ {a['action']} ]{C_RESET} ")
+        print(f"║   • Contexto: {a.get('action_status', 'Turno e ações não verificados.')}")
+        context = a.get("action_context") or {}
+        observed = ", ".join(context.get("available_actions", [])) or "Não confirmadas"
+        print(f"║   • Ações observadas nos botões: {observed}")
         if a["recommended_amount"] > 0:
-            if a["action"] == "CALL":
+            if not available:
+                print(f"║   • Valor do modelo (não validado): {a['recommended_amount']:.1f} fichas")
+            elif a["action"] == "CALL":
                 print(f"║   • Completar Apostas (Adicional):  {a['recommended_amount']:.1f} fichas")
             elif a["action"] == "RAISE":
                 print(f"║   • Aumentar Para (Total na mesa):  {a['recommended_amount']:.1f} fichas")
@@ -623,7 +675,15 @@ def run_live(poll_interval: float = POLL_INTERVAL):
 
             if not turn_info["is_hero_turn"]:
                 hand_str = f" | Mão travada: {app.hero_cards}" if already_has_valid_hand else ""
-                sys.stdout.write(f"\r{C_YELLOW}[AGUARDANDO SUA VEZ DE JOGAR...]{hand_str}{C_RESET}   ")
+                status = "VEZ DO HERO NÃO CONFIRMADA / BOTÕES ILEGÍVEIS" if turn_info.get("action_type") == "UNKNOWN" else "AGUARDANDO SUA VEZ DE JOGAR..."
+                sys.stdout.write(f"\r{C_YELLOW}[{status}]{hand_str}{C_RESET}   ")
+                sys.stdout.flush()
+                time.sleep(poll_interval)
+                continue
+
+            bet_to_call = turn_info.get("bet_to_call")
+            if bet_to_call is None or (turn_info.get("action_type") == "CALL" and bet_to_call <= 0):
+                sys.stdout.write(f"\r{C_YELLOW}[AÇÃO/VALOR DO CALL INCERTO - CHECK NÃO PRESUMIDO]{C_RESET}   ")
                 sys.stdout.flush()
                 time.sleep(poll_interval)
                 continue
@@ -666,28 +726,12 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 last_stack=app.hero_stack,
                 hero_coords=getattr(app, 'hero_coords', None)
             )
-            bet_to_call = turn_info.get("bet_to_call")
-            
-            # Heurística Dinâmica de Aposta (Delta do Pote)
-            # Se o OCR falhou em extrair o valor mas sabemos que é para pagar, 
-            # inferimos a aposta pelo crescimento anormal do pote na mesa.
-            if bet_to_call is None or (bet_to_call == 0.0 and turn_info.get("action_type") == "CALL"):
-                if pot_size > last_pot:
-                    # Se o pote saltou desde o último ciclo, a diferença é a agressão.
-                    # Exemplo: Pote 450 -> 1500 (Salto 1050). Se ninguém pagou, a bet é 1050.
-                    # Para não sermos tão conservadores com multi-way, assumimos delta inteiro provisoriamente
-                    bet_to_call = pot_size - last_pot
-                else:
-                    bet_to_call = 0.0
-            
-            if bet_to_call is None:
-                bet_to_call = 0.0
-
             app.process_cards(
                 detected_cards=detected_cards,
                 pot_size=pot_size,
                 bet_to_call=bet_to_call,
-                show_dashboard=True
+                show_dashboard=True,
+                action_context=turn_info,
             )
 
             time.sleep(poll_interval)
