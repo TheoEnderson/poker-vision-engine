@@ -309,14 +309,73 @@ def detect_turn_and_bet_to_call(
     return result
 
 
+def parse_badge_crop(badge_crop: np.ndarray) -> Optional[float]:
+    """
+    Extrai o valor numérico de fichas da região recortada do badge do Hero.
+    Suporta tanto texto padrão (branco/ouro) quanto texto destacado na vez do jogador (verde neon).
+    """
+    if badge_crop is None or badge_crop.size == 0:
+        return None
+
+    def extract_num(text: str) -> Optional[float]:
+        if not text:
+            return None
+        lines = text.strip().split("\n")
+        # Analisa de baixo para cima (fichas ficam na linha inferior do badge)
+        for line in reversed(lines):
+            nums = re.findall(r"\b\d+(?:[.,]\d+)*\b", line)
+            if nums:
+                raw = nums[-1].replace(",", "").replace(".", "")
+                try:
+                    val = float(raw)
+                    if 0 < val < 50_000_000:
+                        return val
+                except ValueError:
+                    continue
+        return None
+
+    # Método 1: OCR direto em BGR (rápido, ideal para números brancos/ouro no badge)
+    v1 = extract_num(pytesseract.image_to_string(badge_crop))
+    if v1 is not None:
+        return v1
+
+    # Método 2: OCR no canal verde com upscale Lanczos (ideal para highlight verde neon do turno)
+    if len(badge_crop.shape) == 3:
+        g = cv2.resize(badge_crop[:, :, 1], None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
+        v2 = extract_num(pytesseract.image_to_string(g))
+        if v2 is not None:
+            return v2
+
+    # Método 3: Binarização na metade inferior (área exclusiva do stack de fichas)
+    bh, bw = badge_crop.shape[:2]
+    bottom = badge_crop[int(bh * 0.38):, :]
+    bgray = cv2.cvtColor(bottom, cv2.COLOR_BGR2GRAY) if len(bottom.shape) == 3 else bottom
+    up = cv2.resize(bgray, None, fx=3, fy=3, interpolation=cv2.INTER_LANCZOS4)
+    for th in [50, 60, 75, 90]:
+        _, b = cv2.threshold(up, th, 255, cv2.THRESH_BINARY)
+        pad = cv2.copyMakeBorder(b, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=0)
+        for psm in [6, 7, 11]:
+            txt = pytesseract.image_to_string(
+                pad,
+                config=f"--psm {psm} -c tessedit_char_whitelist={OCR_WHITELIST_DIGITS}"
+            ).strip()
+            v3 = extract_num(txt)
+            if v3 is not None:
+                return v3
+
+    return None
+
+
 def extract_hero_stack(
     image_path_or_frame: Union[str, Path, np.ndarray],
     last_stack: float = 0.0,
-    identifier: str = HERO_IDENTIFIER
+    identifier: str = HERO_IDENTIFIER,
+    hero_coords: Optional[Dict[str, int]] = None
 ) -> float:
     """
-    Extrai o stack dinâmico do Hero na mesa (valor numérico abaixo do nome do jogador).
-    Utiliza otimização de cache de coordenadas (ROI) para evitar buscas full-frame contínuas.
+    Extrai o stack dinâmico do Hero na mesa (valor numérico no badge do jogador).
+    Utiliza cache de coordenadas do badge para garantir tempo de execução sub-150ms.
+    Suporta leitura em repouso e durante o turno ativo (destaque verde neon).
     """
     global last_hero_name_coords
 
@@ -324,115 +383,70 @@ def extract_hero_stack(
     if img is None:
         return last_stack
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = img.shape[:2]
+    scale = h / 1080.0
 
-    def process_roi(roi_img: np.ndarray) -> str:
-        roi_resized = cv2.resize(roi_img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        _, otsu = cv2.threshold(roi_resized, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-        cnts, _ = cv2.findContours(255 - otsu, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        mask = np.zeros_like(otsu)
-        for c in cnts:
-            x, y, w, h = cv2.boundingRect(c)
-            if h > 15 and w < 50:
-                cv2.rectangle(mask, (max(0, x - 2), max(0, y - 2)), (x + w + 2, y + h + 2), 255, -1)
-        otsu = cv2.bitwise_or(otsu, 255 - mask)
-        cv2.imwrite("debug_otsu_real.png", otsu)
-        return pytesseract.image_to_string(otsu, config=f"--psm 7 -c tessedit_char_whitelist={OCR_WHITELIST_DIGITS}")
-
-    # 1. Tenta usar o cache da última coordenada conhecida
+    # 1. Rota Rápida via Cache: se as coordenadas do badge já são conhecidas
     if last_hero_name_coords is not None:
-        hx, hy, hw, hh = last_hero_name_coords
-        name_roi = gray[max(0, hy - 10) : hy + hh + 10, max(0, hx - 10) : hx + hw + 10]
-        text = pytesseract.image_to_string(name_roi, config="--psm 7")
-        if any(part in text for part in ["Ment", "End", "The", identifier]):
-            stack_roi = gray[hy + hh : hy + hh + 25, max(0, hx - 150) : min(gray.shape[1], hx + hw + 150)]
-            if stack_roi.size > 0:
-                text_stack = process_roi(stack_roi)
-            else:
-                text_stack = "" 
-            numbers = re.findall(r"\d+(?:[.,]\d+)*", text_stack.strip())
-            if numbers:
-                raw = numbers[-1].replace(",", "").replace(".", "")
-                try:
-                    val = float(raw)
-                    if last_stack > 0 and (val > 3 * last_stack or val < 0.3 * last_stack):
-                        return last_stack
-                    return val
-                except ValueError:
-                    pass
+        bx1, by1, bx2, by2 = last_hero_name_coords
+        if 0 <= by1 < by2 <= h and 0 <= bx1 < bx2 <= w:
+            val = parse_badge_crop(img[by1:by2, bx1:bx2])
+            if val is not None:
+                return val
+        # Se falhou, invalida o cache para refazer a busca
+        last_hero_name_coords = None
 
-    # 2. Fallback: Busca na tela inteira
-    # Aumentar a resolução ajuda a ler nomes em resoluções menores
-    gray_resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    _, otsu = cv2.threshold(gray_resized, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    data = pytesseract.image_to_data(otsu, output_type=Output.DICT)
-    name_idx = -1
-    for i, text in enumerate(data["text"]):
-        if any(part in text for part in ["Ment", "End", "The", identifier]):
-            name_idx = i
-            break
-
-    if name_idx == -1:
-        return last_stack
-
-    # Coordenadas da imagem dobrada
-    left_res = data["left"][name_idx]
-    top_res = data["top"][name_idx]
-    width_res = data["width"][name_idx]
-    height_res = data["height"][name_idx]
-    
-    # Reverte para as originais
-    left, top, width, height = left_res // 2, top_res // 2, width_res // 2, height_res // 2
-    last_hero_name_coords = (left, top, width, height)
-
-    stack_roi = gray[top + height : top + height + 25, max(0, left - 150) : min(gray.shape[1], left + width + 150)]
-    if stack_roi.size == 0:
-        return last_stack
-    text_stack = process_roi(stack_roi)
-
-    clean = text_stack.strip()
-    numbers = re.findall(r"\d+(?:[.,]\d+)*", clean)
-    if numbers:
-        raw_num = numbers[-1].replace(",", "").replace(".", "")
-        try:
-            val = float(raw_num)
-            if last_stack > 0 and (val > 3 * last_stack or val < 0.3 * last_stack):
-                return last_stack
+    # 2. Dica de Proximidade das Cartas do Hero (se hero_coords estiver disponível)
+    if hero_coords is not None:
+        hx = hero_coords.get("left", 0)
+        hy = hero_coords.get("top", 0)
+        hw = hero_coords.get("width", 100)
+        hh = hero_coords.get("height", 80)
+        cx1 = max(0, hx - int(50 * scale))
+        cx2 = min(w, hx + hw + int(50 * scale))
+        cy1 = max(0, hy - int(30 * scale))
+        cy2 = min(h, hy + hh + int(90 * scale))
+        val = parse_badge_crop(img[cy1:cy2, cx1:cx2])
+        if val is not None:
+            last_hero_name_coords = (cx1, cy1, cx2, cy2)
             return val
-        except ValueError:
-            pass
+
+    # 3. Busca Completa no Tabuleiro pelo Identificador do Hero
+    id_lower = identifier.lower()
+    id_clean = re.sub(r"[^a-z0-9]", "", id_lower)
+    raw_parts = [re.sub(r"[^a-z0-9]", "", p) for p in re.split(r"[_ \-]+", id_lower)]
+    parts = [p for p in raw_parts if len(p) >= 3]
+    distinctive = [p for p in parts if len(p) >= 4 and p not in ("the", "and", "for", "end", "poker")]
+    if not distinctive:
+        distinctive = [p for p in parts if len(p) >= 3]
+    if not distinctive and id_clean:
+        distinctive = [id_clean]
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    data = pytesseract.image_to_data(gray, output_type=Output.DICT)
+
+    for i, t in enumerate(data["text"]):
+        tx, ty, tw, th = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+        # Ignora barra superior do navegador e botões de ação na borda inferior
+        if ty < 0.08 * h or ty > 0.85 * h:
+            continue
+        clean = re.sub(r"[^a-zA-Z0-9_]", "", t).lower()
+        if "aumento" in clean or "fold" in clean or "check" in clean:
+            continue
+
+        is_hero_token = (id_clean and id_clean in clean) or any(p in clean for p in distinctive)
+        if is_hero_token:
+            bx1 = max(0, tx - int(55 * scale))
+            bx2 = min(w, tx + tw + int(60 * scale))
+            by1 = max(0, ty - int(15 * scale))
+            by2 = min(h, ty + th + int(38 * scale))
+            val = parse_badge_crop(img[by1:by2, bx1:bx2])
+            if val is not None:
+                last_hero_name_coords = (bx1, by1, bx2, by2)
+                return val
 
     return last_stack
 
-
-if __name__ == "__main__":
-    print("\n" + "=" * 70)
-    print("TESTE 1: Extração do Pote via OCR (mesa_6.png)")
-    print("=" * 70)
-    extracted = extract_pot("mesa_6.png", verbose=True)
-    expected = 28.0
-    print(f"Resultado Pote: Extraído = {extracted} | Esperado = {expected}")
-    assert extracted == expected, f"Erro: esperado {expected}, obteve {extracted}"
-    print("[SUCESSO] Valor do pote extraído com 100% de exatidão!\n")
-
-    print("\n" + "=" * 70)
-    print("TESTE 2: Detecção do Turno do Hero e Bet to Call (mesa_turno.png)")
-    print("=" * 70)
-    turn_info_turno = detect_turn_and_bet_to_call("mesa_turno.png", verbose=True)
-    print(f"Resultado Turno (mesa_turno.png): {turn_info_turno}")
-    assert turn_info_turno["is_hero_turn"] is True
-    assert turn_info_turno["bet_to_call"] == 0.0
-    assert turn_info_turno["action_type"] == "CHECK"
-    print("[SUCESSO] Turno e ação CHECK detectados perfeitamente em mesa_turno.png!\n")
-
-    print("\n" + "=" * 70)
-    print("TESTE 3: Verificação de Turno em Espera (mesa_6.png)")
-    print("=" * 70)
-    turn_info_6 = detect_turn_and_bet_to_call("mesa_6.png", verbose=True)
-    print(f"Resultado Turno (mesa_6.png): {turn_info_6}")
-    assert turn_info_6["is_hero_turn"] is False
-    assert turn_info_6["action_type"] == "WAITING"
-    print("[SUCESSO] Estado WAITING detectado corretamente em mesa_6.png!\n")
 
 def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], verbose: bool = False) -> str:
     """
@@ -470,28 +484,36 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
 
     # 2. Encontrar o Hero (Nome)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # Utilizar a coordenada do cache se existir
+
     global last_hero_name_coords
     hero_angle = 0.0
     found_hero = False
-    
+
     if last_hero_name_coords is not None:
-        hx, hy, hw, hh = last_hero_name_coords
-        center_hx, center_hy = hx + hw // 2, hy + hh // 2
+        bx1, by1, bx2, by2 = last_hero_name_coords
+        center_hx, center_hy = (bx1 + bx2) // 2, (by1 + by2) // 2
         hero_angle = math.degrees(math.atan2(center_hy - cy, center_hx - cx))
         found_hero = True
     else:
-        # Busca completa (fallback)
-        gray_resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        _, otsu = cv2.threshold(gray_resized, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-        data = pytesseract.image_to_data(otsu, output_type=Output.DICT)
-        
+        id_lower = HERO_IDENTIFIER.lower()
+        id_clean = re.sub(r"[^a-z0-9]", "", id_lower)
+        raw_parts = [re.sub(r"[^a-z0-9]", "", p) for p in re.split(r"[_ \-]+", id_lower)]
+        parts = [p for p in raw_parts if len(p) >= 3]
+        distinctive = [p for p in parts if len(p) >= 4 and p not in ("the", "and", "for", "end", "poker")]
+        if not distinctive:
+            distinctive = [p for p in parts if len(p) >= 3]
+        if not distinctive and id_clean:
+            distinctive = [id_clean]
+
+        data = pytesseract.image_to_data(gray, output_type=Output.DICT)
         for i, text in enumerate(data["text"]):
-            if "Ment" in text or "End" in text or HERO_IDENTIFIER in text:
-                hx = data["left"][i] // 2 + data["width"][i] // 4
-                hy = data["top"][i] // 2 + data["height"][i] // 4
-                hero_angle = math.degrees(math.atan2(hy - cy, hx - cx))
+            clean = re.sub(r"[^a-zA-Z0-9_]", "", text).lower()
+            if "aumento" in clean or "fold" in clean or "check" in clean:
+                continue
+            if (id_clean and id_clean in clean) or any(p in clean for p in distinctive):
+                center_hx = data["left"][i] + data["width"][i] // 2
+                center_hy = data["top"][i] + data["height"][i] // 2
+                hero_angle = math.degrees(math.atan2(center_hy - cy, center_hx - cx))
                 found_hero = True
                 break
 
@@ -527,8 +549,38 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
     positions_6max = ["BTN", "SB", "BB", "UTG", "MP", "CO"]
     dist = (hero_idx - dealer_idx) % 6
     position = positions_6max[dist]
-    
+
     if verbose:
         print(f"[OCR] Dealer={dealer_angle:.1f}° (idx {dealer_idx}), Hero={hero_angle:.1f}° (idx {hero_idx}) -> Posição: {position}")
 
     return position
+
+
+if __name__ == "__main__":
+    print("\n" + "=" * 70)
+    print("TESTE 1: Extração do Pote via OCR (mesa_6.png)")
+    print("=" * 70)
+    extracted = extract_pot("mesa_6.png", verbose=True)
+    expected = 28.0
+    print(f"Resultado Pote: Extraído = {extracted} | Esperado = {expected}")
+    assert extracted == expected, f"Erro: esperado {expected}, obteve {extracted}"
+    print("[SUCESSO] Valor do pote extraído com 100% de exatidão!\n")
+
+    print("\n" + "=" * 70)
+    print("TESTE 2: Detecção do Turno do Hero e Bet to Call (mesa_turno.png)")
+    print("=" * 70)
+    turn_info_turno = detect_turn_and_bet_to_call("mesa_turno.png", verbose=True)
+    print(f"Resultado Turno (mesa_turno.png): {turn_info_turno}")
+    assert turn_info_turno["is_hero_turn"] is True
+    assert turn_info_turno["bet_to_call"] == 0.0
+    assert turn_info_turno["action_type"] == "CHECK"
+    print("[SUCESSO] Turno e ação CHECK detectados perfeitamente em mesa_turno.png!\n")
+
+    print("\n" + "=" * 70)
+    print("TESTE 3: Verificação de Turno em Espera (mesa_6.png)")
+    print("=" * 70)
+    turn_info_6 = detect_turn_and_bet_to_call("mesa_6.png", verbose=True)
+    print(f"Resultado Turno (mesa_6.png): {turn_info_6}")
+    assert turn_info_6["is_hero_turn"] is False
+    assert turn_info_6["action_type"] == "WAITING"
+    print("[SUCESSO] Estado WAITING detectado corretamente em mesa_6.png!\n")

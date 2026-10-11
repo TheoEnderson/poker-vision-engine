@@ -643,7 +643,11 @@ def run_live(poll_interval: float = POLL_INTERVAL):
                 app.state_machine.reset_hand()
                 app.hero_position = "Desconhecida"
 
-            app.hero_stack = extract_hero_stack(frame, last_stack=app.hero_stack)
+            app.hero_stack = extract_hero_stack(
+                frame,
+                last_stack=app.hero_stack,
+                hero_coords=getattr(app, 'hero_coords', None)
+            )
             bet_to_call = turn_info.get("bet_to_call")
             
             # Heurística Dinâmica de Aposta (Delta do Pote)

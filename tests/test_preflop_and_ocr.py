@@ -15,10 +15,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from src.ocr.ocr_reader import extract_pot
+    from src.ocr.ocr_reader import extract_pot, extract_hero_stack
     from src.engine.risk_engine import make_decision
 except ImportError:
-    from ocr_reader import extract_pot
+    from ocr_reader import extract_pot, extract_hero_stack
     from risk_engine import make_decision
 
 
@@ -60,6 +60,12 @@ class TestPreflopAndOCR(unittest.TestCase):
             outs=0
         )
         self.assertEqual(decision["action"], "FOLD", "Deveria forçar FOLD com Carta Alta no pós-flop sob aposta pesada.")
+
+    def test_hero_stack_fallback_on_empty(self):
+        """Garante retorno do last_stack quando imagem é nula ou vazia."""
+        dummy = np.zeros((100, 100, 3), dtype=np.uint8)
+        stack = extract_hero_stack(dummy, last_stack=1234.0)
+        self.assertEqual(stack, 1234.0, "Deveria preservar o last_stack em imagem vazia.")
 
 
 if __name__ == '__main__':
