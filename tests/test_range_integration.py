@@ -28,7 +28,8 @@ class TestRangeIntegration(unittest.TestCase):
         for pot in [320, 318, 295, 400, 318]:
             self.process(pot=pot)
             self.assertEqual(self.model.weights, first)
-        self.assertEqual(self.calculate_equity.call_count, 6)
+        self.calculate_equity.assert_called_once()
+        self.assertEqual(self.make_decision.call_count, 6)
         self.assertIs(self.calculate_equity.call_args.kwargs["opp_range_percent"], self.model)
 
     def test_preflop_pot_changes_do_not_infer_new_opponent_actions(self):
@@ -52,7 +53,8 @@ class TestRangeIntegration(unittest.TestCase):
             setattr(self.app, attr, value)
             self.process()
             self.assertEqual(self.model.weights, weights)
-        self.assertEqual(self.calculate_equity.call_count, 4)
+        self.assertEqual(self.calculate_equity.call_count, 2)
+        self.assertEqual(self.make_decision.call_count, 4)
 
     def test_new_streets_accumulate_each_evidence_once(self):
         expected = OpponentModel(FULL_DECK)
@@ -103,6 +105,7 @@ class TestRangeIntegration(unittest.TestCase):
             with self.subTest(board=board):
                 self.app.reset_hand(hero_cards=HERO, reason="Cenário independente")
                 self.calculate_equity.reset_mock()
+                self.make_decision.reset_mock()
                 self.process(board)
                 weights = dict(self.model.weights)
                 revision = self.model.revision
@@ -117,9 +120,11 @@ class TestRangeIntegration(unittest.TestCase):
                 self.assertEqual(self.model.weights, weights)
                 self.assertEqual(self.model.revision, revision)
                 self.assertEqual(recovered["range_revision"], revision)
-                self.assertEqual(self.calculate_equity.call_count, 2)
+                self.calculate_equity.assert_called_once()
+                self.assertEqual(self.make_decision.call_count, 2)
                 self.assertIs(self.process(board), recovered)
-                self.assertEqual(self.calculate_equity.call_count, 2)
+                self.calculate_equity.assert_called_once()
+                self.assertEqual(self.make_decision.call_count, 2)
 
     def test_unknown_call_on_new_street_defers_evidence_until_recovery(self):
         self.process()

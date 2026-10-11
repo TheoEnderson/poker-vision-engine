@@ -465,12 +465,16 @@ def extract_hero_stack(
     return None if require_confirmation else last_stack
 
 
-def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], verbose: bool = False) -> str:
+def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], verbose: bool = False,
+                          diagnostics: Optional[Dict[str, Any]] = None) -> str:
     """
     Identifica a posição do Hero na mesa (BTN, SB, BB, UTG, MP, CO)
     baseado na posição do botão de Dealer (D) e do nome do Hero.
     Assume uma mesa 6-max (layout padrão).
+    diagnostics expõe o score bruto do template e o motivo, sem mudar a classificação.
     """
+    if diagnostics is not None:
+        diagnostics.update(confidence=None, reason="imagem indisponível", layout="6-max")
     img = _resolve_image_input(image_path_or_frame)
     if img is None:
         return "Desconhecida"
@@ -481,6 +485,8 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
     # 1. Encontrar o Botão de Dealer
     template_path = PROJECT_ROOT / "assets" / "templates" / "dealer_button.png"
     if not template_path.exists():
+        if diagnostics is not None:
+            diagnostics["reason"] = "template do dealer ausente"
         if verbose:
             print("[AVISO OCR] Template do botão de Dealer não encontrado.")
         return "Desconhecida"
@@ -488,6 +494,8 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
     template = cv2.imread(str(template_path))
     res = cv2.matchTemplate(img, template, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    if diagnostics is not None:
+        diagnostics.update(confidence=float(max_val), reason="score do dealer abaixo do limiar")
 
     dealer_angle = 0.0
     if max_val > 0.6:
@@ -535,6 +543,8 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
                 break
 
     if not found_hero:
+        if diagnostics is not None:
+            diagnostics["reason"] = "dealer encontrado, mas nome/assento do Hero indisponível"
         if verbose:
             print("[AVISO OCR] Avatar/Nome do Hero não detectado para cálculo de posição.")
         return "Desconhecida"
@@ -566,6 +576,8 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
     positions_6max = ["BTN", "SB", "BB", "UTG", "MP", "CO"]
     dist = (hero_idx - dealer_idx) % 6
     position = positions_6max[dist]
+    if diagnostics is not None:
+        diagnostics.update(reason="posição inferida no layout 6-max", position=position)
 
     if verbose:
         print(f"[OCR] Dealer={dealer_angle:.1f}° (idx {dealer_idx}), Hero={hero_angle:.1f}° (idx {hero_idx}) -> Posição: {position}")

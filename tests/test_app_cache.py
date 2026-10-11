@@ -86,7 +86,9 @@ class TestPokerAnalyticsAppCache(unittest.TestCase):
 
         self.assertIsNot(second, first)
         self.assertEqual(second["hero_stack"], 900.0)
-        self.assertEqual(self.calculate_equity.call_count, 2)
+        self.calculate_equity.assert_called_once()
+        self.assertEqual(self.make_decision.call_count, 2)
+        self.assertEqual(self.make_decision.call_args.kwargs["hero_stack"], 900.0)
         self.assertEqual(self.app.total_recalculations, 2)
 
     def test_opponent_count_change_invalidates_cache(self):
@@ -109,7 +111,8 @@ class TestPokerAnalyticsAppCache(unittest.TestCase):
 
         self.assertIsNot(second, first)
         self.assertEqual(second["hero_position"], "CO")
-        self.assertEqual(self.calculate_equity.call_count, 2)
+        self.calculate_equity.assert_called_once()
+        self.assertEqual(self.make_decision.call_count, 2)
         self.assertEqual(self.app.total_recalculations, 2)
 
     def test_dashboard_uses_values_from_the_rendered_analysis(self):
@@ -196,12 +199,13 @@ class TestPokerAnalyticsAppCache(unittest.TestCase):
         self.assertTrue(first["action_available"])
         self.assertIs(self.app.process_cards([], 25.0, 10.0, False, action_context=context), first)
         self.assertEqual(self.calculate_equity.call_count, 1)
-        # Mesmo estado matemático, mas evidência diferente deve invalidar o cache.
+        # Mesma equity, mas novos botões devem invalidar o cache de decisão.
         context["available_actions"].remove("CALL")
         second = self.app.process_cards([], 25.0, 10.0, False, action_context=context)
         self.assertFalse(second["action_available"])
         self.assertIn("CALL", first["action_context"]["available_actions"])
-        self.assertEqual(self.calculate_equity.call_count, 2)
+        self.calculate_equity.assert_called_once()
+        self.assertEqual(self.make_decision.call_count, 2)
         context["available_actions"].append("CALL")
         context["bet_to_call"] = 20.0
         third = self.app.process_cards([], 25.0, 10.0, False, action_context=context)

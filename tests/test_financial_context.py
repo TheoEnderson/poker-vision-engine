@@ -257,7 +257,8 @@ class TestLiveFinancialContext(unittest.TestCase):
         frame = test_live_hands.frame
         output = self.live([frame(stack=2415, pot=215), frame(stack=5, pot=295),
                             frame(stack=2375, pot=335)])
-        self.assertEqual(self.calculate_equity.call_count, 2)
+        self.calculate_equity.assert_called_once()
+        self.assertEqual(self.make_decision.call_count, 2)
         self.assertEqual([c.kwargs["hero_stack"] for c in self.make_decision.call_args_list], [2415, 2375])
         self.assertIn("SEM RECOMENDAÇÃO ATUAL", output)
         self.assertFalse(self.analyses[1]["action_available"])

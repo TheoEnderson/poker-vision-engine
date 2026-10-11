@@ -303,7 +303,8 @@ def detect_board(
     threshold: float = DEFAULT_RANK_THRESHOLD,
     verbose: bool = True,
     num_slots: int = 5,
-    board_coords: Optional[Dict[str, int]] = None
+    board_coords: Optional[Dict[str, int]] = None,
+    save_unknown: bool = True,
 ) -> List[str]:
     """Detecta dinamicamente as cartas do board comunitário na imagem da mesa usando contornos."""
     ranks, suits = load_templates()
@@ -387,7 +388,8 @@ def detect_board(
                 )
         else:
             card_str = "Desconhecida"
-            save_unknown_card(slot_img, prefix=f"board_slot_{i + 1}", verbose=verbose)
+            if save_unknown:
+                save_unknown_card(slot_img, prefix=f"board_slot_{i + 1}", verbose=verbose)
             if verbose:
                 print(
                     f"Slot {i + 1}: Confiança insuficiente (Rank: {best_rank_score:.3f}, "
@@ -457,7 +459,8 @@ def find_and_detect_hero_cards(
     threshold: float = DEFAULT_RANK_THRESHOLD,
     verbose: bool = True,
     hero_coords_hint: Optional[Dict[str, int]] = None,
-    return_coords: bool = False
+    return_coords: bool = False,
+    save_unknown: bool = True,
 ) -> Union[List[str], Tuple[List[str], Optional[Dict[str, int]]]]:
     """
     Localiza dinamicamente as duas cartas abertas do Hero em qualquer posição da mesa
@@ -628,9 +631,9 @@ def find_and_detect_hero_cards(
     if not best_cards:
         if last_res:
             box, slot1, slot2, c1_str, r1, sr1, s1, ss1, c2_str, r2, sr2, s2, ss2 = last_res
-            if c1_str == "Desconhecida":
+            if save_unknown and c1_str == "Desconhecida":
                 save_unknown_card(slot1, prefix="hero_slot_1", verbose=verbose)
-            if c2_str == "Desconhecida":
+            if save_unknown and c2_str == "Desconhecida":
                 save_unknown_card(slot2, prefix="hero_slot_2", verbose=verbose)
             if verbose:
                 print(f"[INFO] Cartas do Hero não reconhecidas com confiança suficiente: [{c1_str}, {c2_str}]. Retornando [].")

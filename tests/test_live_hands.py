@@ -186,13 +186,21 @@ class TestLiveHands(unittest.TestCase):
         self.assertEqual(self.analyses[-1]["hero_cards"], NEXT_HERO)
         self.assertEqual(self.analyses[-2]["hero_cards"], HERO)
 
-    def test_identical_preflop_data_after_gap_stays_uncertain_without_evidence(self):
+    def test_identical_preflop_data_after_observed_end_confirms_new_hand(self):
         current = frame(board=[], pot=30)
         output = self.live([current, frame([], [], pot=0, turn=False), current, current])
-        self.assertEqual(self.app.state_machine.hand_generation, 0)
-        self.assertEqual(self.calculate_equity.call_count, 1)
-        self.assertEqual(len(self.analyses), 1)
+        self.assert_new_hand(HERO, [])
+        self.assertEqual(self.calculate_equity.call_count, 2)
+        self.assertEqual(len(self.analyses), 2)
         self.assertIn("CAPTURA INCERTA", output)
+
+    def test_identical_preflop_data_after_unconfirmed_gap_recovers_same_hand(self):
+        current = frame(board=[], pot=30)
+        self.live([current, frame([], [], pot=30, turn=False), current, current])
+        self.assertEqual(self.app.state_machine.hand_generation, 0)
+        self.calculate_equity.assert_called_once()
+        self.app.opponent_model.reset.assert_not_called()
+        self.assertTrue(self.analyses[-1]["action_available"])
 
     def test_alternating_candidates_do_not_count_as_corroboration(self):
         self.live([frame(), frame(NEXT_HERO, NEXT_FLOP, pot=150),
