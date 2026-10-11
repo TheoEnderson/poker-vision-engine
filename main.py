@@ -632,7 +632,9 @@ def run_live(poll_interval: float = POLL_INTERVAL):
             sys.stdout.flush()
 
             try:
-                active_opponents = detect_active_opponents(frame)
+                active_opponents = detect_active_opponents(
+                    frame, hero_coords=getattr(app, 'hero_coords', None)
+                )
                 app.num_opponents = active_opponents
             except Exception:
                 app.num_opponents = DEFAULT_NUM_OPPONENTS

@@ -6,8 +6,9 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 
-from main import PokerAnalyticsApp
+from main import PokerAnalyticsApp, run_live
 from src.engine.state_machine import HandState, PokerHandStateMachine
+from tests import test_opponent_detection
 
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
@@ -124,6 +125,43 @@ class TestPokerAnalyticsAppCache(unittest.TestCase):
         self.assertIn("POSIÇÃO HERO:     BTN", rendered)
         self.assertIn("OPONENTES:       2", rendered)
         self.assertIn("Stack do Hero:       1000.0", rendered)
+
+    def test_live_count_reaches_monte_carlo_and_dashboard_across_streets(self):
+        self.app.auto_detect_hero = True
+        test_opponent_detection.TestOpponentDetection.setUpClass()
+        fixture = test_opponent_detection.TestOpponentDetection()
+        counts = [4, 3, 2, 2, 1]
+        frames = [fixture.table(range(count)) for count in counts]
+        boards = [
+            [],
+            ["2c", "3d", "7s"],
+            ["2c", "3d", "7s", "9c"],
+            ["2c", "3d", "7s", "9c", "Jd"],
+            ["2c", "3d", "7s", "9c", "Jd"],
+        ]
+        hero_box = {"left": 1208, "top": 652, "width": 179, "height": 61}
+        # Captura, OCR, relógio e análise probabilística são fronteiras controladas;
+        # contagem visual, ciclo ao vivo, FSM e invalidação de cache são reais.
+        with patch("main.PokerAnalyticsApp", return_value=self.app), \
+                patch("main.grab_screen", side_effect=frames + [KeyboardInterrupt]), \
+                patch("main.find_and_detect_hero_cards", return_value=(self.app.hero_cards, hero_box)), \
+                patch("main.detect_turn_and_bet_to_call", return_value={"is_hero_turn": True, "bet_to_call": 10.0}), \
+                patch("main.detect_board", side_effect=boards), \
+                patch("main.extract_pot", return_value=25.0), \
+                patch("main.extract_hero_position", return_value="BTN"), \
+                patch("main.extract_hero_stack", return_value=1000.0), \
+                patch("main.time.sleep"), \
+                patch.object(self.app, "render_dashboard") as dashboard, \
+                redirect_stdout(io.StringIO()):
+            run_live()
+
+        self.assertEqual([call.kwargs["num_opponents"] for call in self.calculate_equity.call_args_list], counts)
+        analyses = [call.args[0] for call in dashboard.call_args_list]
+        self.assertEqual([analysis["num_opponents"] for analysis in analyses], counts)
+        self.assertEqual([analysis["state"] for analysis in analyses], ["PRE_FLOP", "FLOP", "TURN", "RIVER", "RIVER"])
+        # Os dois últimos frames só diferem na contagem: precisam recalcular.
+        self.assertEqual(self.app.total_recalculations, 5)
+        self.assertEqual(self.app.last_analysis["num_opponents"], 1)
 
 
 if __name__ == "__main__":

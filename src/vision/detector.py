@@ -13,6 +13,7 @@ import numpy as np
 
 from src.config import (
     CARD_BRIGHTNESS_THRESHOLD,
+    DEFAULT_NUM_OPPONENTS,
     DEFAULT_RANK_THRESHOLD,
     DEFAULT_SUIT_THRESHOLD,
     MAX_GREEN_RATIO,
@@ -659,15 +660,18 @@ def find_and_detect_hero_cards(
 
 def detect_active_opponents(
     image_path_or_frame: Union[str, Path, np.ndarray],
-    verbose: bool = False
+    verbose: bool = False,
+    hero_coords: Optional[Dict[str, int]] = None,
 ) -> int:
     """
-    Estima o número de oponentes ativos na mão (2 a 5) contando os clusters
-    de dorsos vermelhos das cartas não reveladas.
+    Estima adversários ainda na mão, excluindo o Hero, pelos pares de dorsos
+    vermelhos visíveis. Não conta nomes/avatares nem todos os assentos ocupados.
+    Suporta 1 a 5 adversários no layout atual. Sem evidência suficiente, retorna
+    DEFAULT_NUM_OPPONENTS como estimativa, não como confirmação de jogadores.
     """
     img = _resolve_image_input(image_path_or_frame)
-    if img is None:
-        return 4
+    if img is None or img.size == 0:
+        return DEFAULT_NUM_OPPONENTS
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     lower_red1 = np.array([0, 100, 50])
@@ -681,37 +685,54 @@ def detect_active_opponents(
 
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    centers = []
+    boxes = []
     for c in cnts:
         area = cv2.contourArea(c)
         x, y, w, h = cv2.boundingRect(c)
-        if 150 < area < 5000 and 15 < w < 120 and 15 < h < 120:
-            centers.append((x + w // 2, y + h // 2))
-
-    # Agrupa cartas próximas do mesmo jogador
-    opponents = 0
-    grouped = []
-    for cx, cy in centers:
-        found = False
-        for gx, gy in grouped:
-            if abs(cx - gx) < 60 and abs(cy - gy) < 60:
-                found = True
-                break
-        if not found:
-            grouped.append((cx, cy))
-            opponents += 1
-
-    # Remove falsos positivos da interface, board ou cartas do Hero
-    valid_opponents = 0
-    for gx, gy in grouped:
+        # Dorsos são regiões retangulares quase preenchidas de vermelho.
+        # Naipes e partes de avatares não são evidência de um jogador ativo.
+        if not (150 < area < 10000 and 15 < w < 120 and 40 < h < 120 and area / (w * h) > 0.85):
+            continue
+        gx, gy = x + w // 2, y + h // 2
         if gy > 800:
-            continue  # Action buttons ou Hero's cards
+            continue  # Botões de ação
         if 350 < gy < 600 and 600 < gx < 1300:
-            continue  # Board area
-        valid_opponents += 1
+            continue  # Board
+        if hero_coords and (
+            hero_coords["left"] <= gx < hero_coords["left"] + hero_coords["width"]
+            and hero_coords["top"] <= gy < hero_coords["top"] + hero_coords["height"]
+        ):
+            continue
+        boxes.append((x, y, w, h))
+
+    def adjacent(a, b):
+        left, right = sorted((a, b), key=lambda box: box[0])
+        gap = right[0] - (left[0] + left[2])
+        return (
+            0 <= gap <= 25
+            and abs(left[1] - right[1]) <= 0.25 * min(left[3], right[3])
+            and min(left[3], right[3]) >= 0.75 * max(left[3], right[3])
+        )
+
+    # Agrupa pelo espaço entre as bordas, não pela distância entre os centros:
+    # duas cartas inteiramente visíveis também pertencem ao mesmo jogador.
+    valid_opponents = 0
+    pending = list(boxes)
+    while pending:
+        group = [pending.pop()]
+        for anchor in group:
+            neighbours = [box for box in pending if adjacent(anchor, box)]
+            for box in neighbours:
+                pending.remove(box)
+            group.extend(neighbours)
+        # Um único retângulo (ex.: baralho decorativo no centro) não é um par.
+        if len(group) >= 2:
+            valid_opponents += 1
 
     if valid_opponents == 0:
-        valid_opponents = 4
+        if verbose:
+            print(f"[INFO] Contagem de adversários indisponível; usando estimativa {DEFAULT_NUM_OPPONENTS}.")
+        return DEFAULT_NUM_OPPONENTS
 
     # Numa mesa 6-max, se tirarmos o Hero, no máximo 5 oponentes
     return min(valid_opponents, 5)
