@@ -64,6 +64,7 @@ ACTION_BUTTONS_ROI: Dict[str, int] = get_roi_config("ACTION_BUTTONS_ROI", {"top"
 # Limiares de Visão Computacional
 DEFAULT_RANK_THRESHOLD: float = get_threshold("RANK_THRESHOLD", 0.68)
 DEFAULT_SUIT_THRESHOLD: float = get_threshold("SUIT_THRESHOLD", 0.68)
+DEFAULT_DEALER_THRESHOLD: float = get_threshold("DEALER_THRESHOLD", 0.52)
 CARD_BRIGHTNESS_THRESHOLD: int = get_threshold("CARD_BRIGHTNESS_THRESHOLD", 150, True)
 MAX_GREEN_RATIO: float = get_threshold("MAX_GREEN_RATIO", 0.40)
 

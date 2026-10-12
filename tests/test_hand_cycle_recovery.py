@@ -271,6 +271,20 @@ class TestDealerDiagnostics(unittest.TestCase):
         self.assertEqual(self.position(.9), self.position(.9, diagnostics=diagnostic))
         self.assertEqual(diagnostic["layout"], "6-max")
 
+    def test_dealer_score_between_052_and_060_is_recognized(self):
+        diagnostic = {}
+        pos = self.position(.55, hero=True, diagnostics=diagnostic)
+        self.assertNotEqual(pos, UNKNOWN)
+        self.assertAlmostEqual(diagnostic["confidence"], .55)
+        self.assertIn("6-max", diagnostic["reason"])
+
+    def test_dealer_score_below_threshold_is_rejected(self):
+        diagnostic = {}
+        pos = self.position(.50, hero=True, diagnostics=diagnostic)
+        self.assertEqual(pos, UNKNOWN)
+        self.assertAlmostEqual(diagnostic["confidence"], .50)
+        self.assertIn("abaixo", diagnostic["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

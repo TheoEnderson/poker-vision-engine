@@ -15,6 +15,7 @@ from pytesseract import Output
 
 from src.config import (
     ACTION_BUTTONS_ROI,
+    DEFAULT_DEALER_THRESHOLD,
     HERO_IDENTIFIER,
     MAX_REALISTIC_POT,
     OCR_WHITELIST_DIGITS,
@@ -521,15 +522,23 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
         return "Desconhecida"
 
     template = cv2.imread(str(template_path))
-    res = cv2.matchTemplate(img, template, cv2.TM_CCOEFF_NORMED)
+    # Em mesas full-screen (w >= 600, h >= 400), foca na área da mesa para evitar falso positivo em barras periféricas
+    if w >= 600 and h >= 400:
+        y_offset, x_offset = 50, 60
+        search_img = img[y_offset:h - 80, x_offset:w - 60]
+    else:
+        y_offset, x_offset = 0, 0
+        search_img = img
+
+    res = cv2.matchTemplate(search_img, template, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
     if diagnostics is not None:
         diagnostics.update(confidence=float(max_val), reason="score do dealer abaixo do limiar")
 
     dealer_angle = 0.0
-    if max_val > 0.6:
-        dealer_x = max_loc[0] + template.shape[1] // 2
-        dealer_y = max_loc[1] + template.shape[0] // 2
+    if max_val >= DEFAULT_DEALER_THRESHOLD:
+        dealer_x = max_loc[0] + x_offset + template.shape[1] // 2
+        dealer_y = max_loc[1] + y_offset + template.shape[0] // 2
         dealer_angle = math.degrees(math.atan2(dealer_y - cy, dealer_x - cx))
     else:
         if verbose:
