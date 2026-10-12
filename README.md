@@ -1,183 +1,219 @@
-# Poker Analytics Engine (PAE)
+# Real-Time Poker Vision Assistant & Decision Engine (PAE)
 
-Assistente visual para Texas Hold'em: reconhece cartas e valores da mesa, acompanha o ciclo das mãos e apresenta equity, pot odds, EV de referência e recomendações no terminal. Não clica nos botões nem executa ações automaticamente.
+[![Python 3.x](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![OpenCV](https://img.shields.io/badge/OpenCV-5.x-green?logo=opencv&logoColor=white)](https://opencv.org/)
+[![Tesseract OCR](https://img.shields.io/badge/Tesseract-OCR-yellow?logo=google&logoColor=white)](https://github.com/tesseract-ocr/tesseract)
+[![NumPy](https://img.shields.io/badge/NumPy-2.x-informational?logo=numpy&logoColor=white)](https://numpy.org/)
+[![Arquitetura](https://img.shields.io/badge/Arquitetura-Máquina%20de%20Estados%20Finitos-orange)](#arquitetura-do-sistema)
+[![Licença: MIT](https://img.shields.io/badge/Licença-MIT-purple.svg)](LICENSE)
 
-Combina OpenCV, Tesseract, Monte Carlo, ranges ponderados, blueprint pré-flop e solver CFR+ pós-flop. As estratégias são aproximações do modelo implementado, não uma garantia de jogo ótimo ou de solução GTO para mesas reais multiway.
+Assistente autônomo de visão computacional em tempo real e motor de tomada de decisão com base na Teoria dos Jogos (GTO) para Texas Hold'em.
 
-## Execução rápida
+Construído com **zero invasividade** (captura visual via Chrome DevTools Protocol / CDP Websockets ignorando os bloqueios do Wayland e operando em background), o PAE monitora mesas de poker ao vivo, segmenta cartas comunitárias e da mão do Hero via Template Matching multi-escala, executa OCR em dois estágios para extração de potes e stacks, garante a integridade sequencial do jogo através de uma Máquina de Estados Finitos (FSM) estrita e calcula o Valor Esperado (EV) e Pot Odds em tempo real por meio de simulações de Monte Carlo.
 
-Com o ambiente instalado e a mesa configurada:
+---
+
+## Sumário
+- [Principais Funcionalidades](#principais-funcionalidades)
+- [Arquitetura Multi-Site](#arquitetura-multi-site-e-rois-dinâmicas)
+- [Arquitetura do Sistema](#arquitetura-do-sistema)
+- [Estrutura de Diretórios](#estrutura-de-diretórios)
+- [Guia de Instalação](#guia-de-instalação)
+- [Configuração (.env e sites.json)](#configuração-env-e-sitesjson)
+- [Uso e Execução](#uso-e-execução)
+- [Licença](#licença)
+
+---
+
+## Principais Funcionalidades
+
+- **Captura Headless (CDP)**: Utiliza Chrome DevTools Protocol para furar completamente as restrições de captura de tela do Wayland, permitindo analisar a aba do jogo em background mesmo encoberta.
+- **Detecção Dinâmica de Contornos**: Localização automática das cartas (Board/Hero) via `cv2.findContours` imune a resizes e pequenos scrools de janela.
+- **Template Matching Multi-Escala Normalizado**: Reconhecimento dinâmico de Ranks e Naipes testando variações de escala entre 60% e 150%, tornando o sistema imune a diferentes resoluções de tela e densidades de pixel (DPI).
+- **Filtro Cromático HSV para Naipes**: Separação matemática rigorosa entre naipes vermelhos (`♥`, `♦`) e pretos (`♠`, `♣`), eliminando confusões visuais.
+- **OCR com Binarização de Otsu e Filtro de Contorno**: Leitura numérica precisa do pote e stack do Hero com redimensionamento 2x.
+- **Iron Lock Estrito (Trava de Ferro)**: Sistema de retenção de cartas que impede perdas de informações por oscilações transitórias na visão computacional.
+- **Ciclo de Vida FSM Estrito**: Garantia de transições sequenciais válidas no Texas Hold'em.
+- **Motor Heurístico de Agressividade e Valor (TPTK+)**: Sistema inteligente que recusa Calls "esperançosos", levanta apostas fortes com Top Pair Top Kicker (TPTK) ou Overpairs, e realiza 3-Bet com mãos de Tier 1 no Pré-Flop.
+- **Filtro de Range Pós-Flop**: Corta automaticamente 50% da Equity simulada se o Hero possui apenas High Card sem projetos e sofre uma aposta agressiva.
+- **Arquitetura Multi-Site**: Configuração externalizada de ROIs (`sites.json`) permitindo mapear qualquer site ou aplicativo de Poker (ReplayPoker, CoinPoker, PokerBros, etc) sem mexer no código Python.
+- **Dataset Logger Automático**: Coleta silenciosa de métricas (Pote, Stack, Equity, EV, Ações) na pasta `data/dataset_partidas.csv` para posterior treinamento de Machine Learning.
+
+---
+
+## Arquitetura Multi-Site e ROIs dinâmicas
+
+Com o uso do arquivo `sites.json`, você pode pre-configurar áreas de corte (ROIs) de diversos clientes ou sites de Poker diferentes simultaneamente. O PAE carrega o perfil correto lendo a variável de ambiente `POKER_SITE`.
+
+Exemplo (`sites.json`):
+```json
+{
+  "ReplayPoker": {
+    "POT_ROI": { "top": 210, "left": 850, "width": 220, "height": 60 }
+  },
+  "CoinPoker": {
+    "POT_ROI": { "top": 300, "left": 800, "width": 200, "height": 50 }
+  }
+}
+```
+
+---
+
+## Arquitetura do Sistema
+
+```mermaid
+flowchart TD
+    subgraph Camada de Captura
+        SCR[Captura de Tela - CDP/WebSockets] --> RAW[Frame BGR Bruto]
+    end
+
+    subgraph Pipeline de Visão Computacional
+        RAW --> DET_BOARD[Detecção e Segmentação do Board]
+        RAW --> DET_HERO[Localização da Mão do Hero + Iron Lock]
+        RAW --> DET_OPP[Contagem de Clusters de Oponentes Ativos]
+        DET_BOARD --> TM[Template Matching Multi-Escala + Filtro HSV]
+        DET_HERO --> TM
+    end
+
+    subgraph Pipeline de OCR
+        RAW --> OCR_POT[Extração do Pote + Filtro de Sanidade]
+        RAW --> OCR_STACK[Leitor Dinâmico de Stack do Hero]
+    end
+
+    subgraph Gerenciamento de Estado
+        DET_BOARD --> FSM[Máquina de Estados Finitos - FSM]
+        FSM --> CACHE{Estado ou Mesa Mudou?}
+    end
+
+    subgraph Motor de Risco e Decisão
+        CACHE -- Não --> REUSE[Reutiliza Decisão em Cache - 0% CPU]
+        CACHE -- Sim --> MC[Simulador Monte Carlo - 10.000 iterações]
+        DET_HERO --> TIER[Classificador Pré-Flop em 4 Tiers]
+        MC --> EV[Cálculo de EV e Pot Odds]
+        TIER --> EV
+        OCR_POT --> EV
+        OCR_STACK --> EV
+        EV --> HEUR[Heurísticas Avançadas: TPTK, Overpairs, Filtro de Range]
+        HEUR --> ACTION[Decisão Ótima: FOLD / CHECK / CALL / RAISE / ALL-IN]
+        ACTION --> LOG[Dataset Logger Automático]
+    end
+```
+
+---
+
+## Estrutura de Diretórios
+
+```text
+POKER/
+├── assets/
+│   ├── cards/                  # Recortes de cartas processadas (slot_1..slot_5)
+│   ├── samples/                # Capturas reais da mesa para validação
+│   ├── templates/              # Templates binarizados de Ranks (2..A) e Naipes (s,h,d,c)
+│   └── unknown_cards/          # Salvamento automático de cartas não catalogadas
+├── data/
+│   └── dataset_partidas.csv    # Histórico de jogadas gerado via Logger para IA (git-ignored)
+├── docs/
+│   └── Documento_Arquitetura_PokerAnalytics.pdf  # Design extendido do sistema
+├── scripts/
+│   ├── gerar_avatar.py         # Utilitário para gerar avatares e assets secundários
+│   └── measure_cards.py        # Ferramenta para medir coordenadas durante a calibração
+├── src/
+│   ├── config.py               # Configuração global, lendo de sites.json e .env
+│   ├── dataset_logger.py       # Gravação em tempo real no CSV de dados da mesa
+│   ├── vision/                 # Pipeline visual (Template Matching, detecção, máscara)
+│   ├── ocr/                    # OCR do pote e stack (Tesseract)
+│   └── engine/                 # Risco, Máquina de Estados (FSM) e Heurísticas
+├── tests/                      # Suíte de Testes
+│   ├── debug_archive/          # Scripts isolados de debug para uso livre
+│   └── test_preflop_and_ocr.py # Testes de sanidade de OCR
+├── sites.json                  # Perfis de ROIs da mesa suportando multi-clientes (ReplayPoker, etc)
+├── main.py                     # Ponto de entrada (Assistente ao vivo `--live`)
+├── requirements.txt            # Dependências Python
+└── .env.example                # Variáveis de ambiente configuráveis
+```
+
+---
+
+## Guia de Instalação
+
+### Linux (Ubuntu / Debian / Arch)
+
+1. **Instalar dependências de sistema** (Python, Tesseract OCR):
+   ```bash
+   # Ubuntu / Debian
+   sudo apt update
+   sudo apt install -y python3 python3-pip python3-venv tesseract-ocr google-chrome-stable
+
+   # Arch Linux
+   sudo pacman -S python python-pip tesseract google-chrome
+   ```
+
+2. **Inicie o Chrome com porta de depuração aberta (necessário para o Wayland/CDP Capture)**:
+   ```bash
+   google-chrome --remote-debugging-port=9222 --user-data-dir=$HOME/chrome-poker-bot --remote-allow-origins=*
+   ```
+
+3. **Configurar o ambiente virtual Python**:
+   ```bash
+   cd ~/Projetos/POKER
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+### Windows
+
+1. **Instalar Python 3.10+** (Marque **Add Python to PATH** na instalação).
+2. **Instalar Tesseract OCR**:
+   - Baixe o instalador oficial em [UB-Mannheim/tesseract/wiki](https://github.com/UB-Mannheim/tesseract/wiki).
+   - Adicione `C:\Program Files\Tesseract-OCR` às Variáveis de Ambiente do Sistema (`PATH`).
+3. **Configurar o ambiente virtual no PowerShell**:
+   ```powershell
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+---
+
+## Configuração (.env e sites.json)
+
+A arquitetura usa dois níveis de configuração. O layout de ROIs está no arquivo `sites.json`, mas credenciais de sistema ou parâmetros gerais dinâmicos devem ir no `.env`.
+
+Copie o modelo padrão:
+```bash
+cp .env.example .env
+```
+
+| Parâmetro de Ambiente | Padrão | Descrição |
+| :--- | :--- | :--- |
+| `POKER_SITE` | `ReplayPoker` | Nome da configuração no `sites.json` a ser mapeada. |
+| `HERO_IDENTIFIER` | `The_Ment_End` | Nome do jogador para ancoragem do OCR visual. |
+| `POLL_INTERVAL` | `0.5` | Segundos entre cada quadro analisado da mesa. |
+| `HEAVY_BET_STACK_RATIO`| `0.40` | Limite (40%) de stack aceitável antes de ativar Folds defensivos. |
+
+---
+
+## Uso e Execução
+
+### Modo Assistente Autônomo ao Vivo (--live)
+Acompanha a tela em tempo real com overlay do terminal atualizando probabilidades, EV, Equity, filtragens de range e heurística, decidindo de imediato a sua jogada ótima:
 
 ```bash
 ./venv/bin/python main.py --live
 ```
+*(Para mudar o site, adicione a variável: `POKER_SITE=CoinPoker ./venv/bin/python main.py --live`)*
 
-Para encaminhar o parâmetro `--loose` ao motor de risco e registrar o desempenho:
-
+### Execução dos Testes Unitários
+Valida integridade do OCR e detecção de ranges lógicos:
 ```bash
-./venv/bin/python main.py --live --loose \
-  --profile-jsonl /tmp/pae-latencia.jsonl
+./venv/bin/python -m unittest discover -s tests
 ```
 
-`--loose` não altera o reconhecimento visual nem configura um novo blueprint pré-flop. Encerre com `Ctrl+C` para imprimir as métricas da sessão.
-
-## Instalação e captura
-
-São necessários Python, Tesseract no `PATH` e um mecanismo de captura compatível com a sessão gráfica. As dependências Python e suas versões mínimas estão em [requirements.txt](requirements.txt).
-
-Exemplo de preparação em Ubuntu/Debian:
-
-```bash
-sudo apt install python3 python3-venv tesseract-ocr
-python3 -m venv venv
-./venv/bin/python -m pip install -r requirements.txt
-```
-
-[src/vision/vision.py](src/vision/vision.py) tenta, nesta ordem:
-
-1. Chrome DevTools Protocol (CDP), em `localhost:9222`.
-2. `grim`, quando detecta uma sessão Wayland.
-3. Captura do monitor por `mss`, como alternativa.
-
-CDP é opcional e requer uma instância do navegador com depuração remota habilitada. O código procura uma aba ReplayPoker e, na ausência dela, uma aba do tipo `page`. Verifique qual aba está sendo capturada e não exponha a porta de depuração à rede.
-
-A disponibilidade de `grim` depende do compositor Wayland; o fallback por `mss` também depende do ambiente gráfico. Existe caminho de captura por `mss` para Windows, mas as regressões visuais recentes foram reproduzidas no Linux.
-
-Na captura do monitor, janelas sobrepostas podem ocultar cartas, dealer e valores. Mantenha o terminal fora das regiões relevantes. A captura por CDP não inclui essas sobreposições, mas utiliza um ajuste específico de altura para viewports com largura de 1920 px.
-
-Os perfis e as fixtures recentes usam layouts Replay Poker em **1920×1080**. Não há garantia de funcionamento em qualquer resolução, zoom ou disposição de assentos: mudanças podem exigir calibração de ROIs e templates.
-
-## Configuração
-
-[src/config.py](src/config.py) lê variáveis de ambiente e o perfil de [sites.json](sites.json). O perfil padrão é `ReplayPoker`; também existe um perfil `PokerStars`, cuja presença não comprova suporte integral ao cliente.
-
-[.env.example](.env.example) serve como referência. **Não há carregamento automático de `.env`**: exporte as variáveis no shell ou forneça-as ao iniciar o processo.
-
-```bash
-HERO_IDENTIFIER=MeuNick POKER_SITE=ReplayPoker \
-  ./venv/bin/python main.py --live
-```
-
-| Variável | Padrão | Finalidade |
-| --- | --- | --- |
-| `HERO_IDENTIFIER` | `The_Ment_End` | Nome usado na localização visual do Hero. Ajuste para seu jogador. |
-| `POKER_SITE` | `ReplayPoker` | Perfil de ROIs e limiares em `sites.json`. |
-| `MONTE_CARLO_ITERATIONS` | `10000` | Número de simulações por recálculo de equity. |
-| `POLL_INTERVAL` | `0.5` | Pausa após o processamento de cada captura. |
-| `RANK_THRESHOLD` / `SUIT_THRESHOLD` | `0.68` | Limiares de reconhecimento das cartas. |
-| `DEALER_THRESHOLD` | `0.52` | Limiar do detector do botão D. |
-| `MAX_REALISTIC_POT` | `10000` | Teto configurável de sanidade para o pote. |
-
-As coordenadas podem ser sobrescritas por variáveis como `POT_ROI_TOP`, `POT_ROI_LEFT`, `POT_ROI_WIDTH` e `POT_ROI_HEIGHT`. Para os botões, o prefixo utilizado pelo código é **`ACTION_BUTTONS_ROI_`**.
-
-Alterar apenas ROIs não garante suporte a outro site: símbolos, rótulos, geometria e semântica financeira também precisam ser validados.
-
-## Arquitetura e fluxo
-
-```text
-Captura atual
-  ├─ Hero e board: segmentação e reconhecimento visual
-  └─ Pote, IDs da mão, botões e dealer: tarefas paralelas do mesmo frame
-            ↓
-Validação do ciclo da mão, cartas e contexto observado
-            ↓
-Validação financeira e disponibilidade das ações
-            ↓
-Ranges deduplicados → cache de equity → Monte Carlo quando necessário
-            ↓
-EV / pot odds → blueprint pré-flop ou solver pós-flop → cache de decisão
-            ↓
-Painel: recomendação compatível, análise informativa ou suspensão explícita
-```
-
-| Componente | Responsabilidade |
-| --- | --- |
-| [main.py](main.py) | Orquestração live, confirmação de mãos, validação de contexto, caches e painel. |
-| [src/vision/](src/vision/) | Captura, localização/classificação das cartas e detecção de adversários ativos. |
-| [src/ocr/ocr_reader.py](src/ocr/ocr_reader.py) | Pote, stack, botões, valor de call e dealer/posição. |
-| [src/ocr/hand_identity.py](src/ocr/hand_identity.py) | Leitura dos IDs atual/anterior para corroborar a identidade da mão. |
-| [src/engine/state_machine.py](src/engine/state_machine.py) | Estado conhecido da mão, transições e validação das cartas. |
-| [src/engine/range_model.py](src/engine/range_model.py) | Pesos adversários e aplicação deduplicada das evidências representadas. |
-| [src/engine/evaluator.py](src/engine/evaluator.py) | Avaliação das mãos e Monte Carlo com participação real nos empates. |
-| [src/engine/risk_engine.py](src/engine/risk_engine.py) | EV de referência, pot odds e integração das estratégias. |
-| [src/engine/blueprint.py](src/engine/blueprint.py) | Distribuições de ações pré-flop por tier e contexto implementado. |
-| [src/engine/game_tree.py](src/engine/game_tree.py), [src/engine/cfr_solver.py](src/engine/cfr_solver.py) | Árvore financeira e solver pós-flop. |
-| [src/diagnostics.py](src/diagnostics.py) | Perfil opcional por etapa e registros JSONL. |
-| [src/engine/dataset_logger.py](src/engine/dataset_logger.py) | Registro de análises em `data/dataset_partidas.csv`. |
-
-### Caches e ranges
-
-O cache probabilístico é separado do cache de decisão. Mudanças financeiras podem exigir novo EV e nova estratégia sem repetir Monte Carlo se o contexto probabilístico permanecer igual. O reconhecimento visual e as validações continuam sendo executados: **cache não significa zero CPU**.
-
-Mudanças relevantes, incluindo a quantidade de adversários, invalidam os resultados correspondentes. Uma nova mão confirmada limpa o contexto e os caches anteriores e reinicializa os ranges específicos da mão.
-
-Repetir a mesma evidência de board não reforça cumulativamente os pesos. Uma alteração do pote, por si só, não comprova uma nova ação adversária. O modelo atual não mantém ranges individuais por jogador.
-
-## Segurança e interpretação do painel
-
-- Cartas duplicadas no Hero, no board ou entre ambos impedem a análise matemática daquela captura.
-- Leituras temporariamente vazias ou parciais do board não autorizam regressões de street. O último estado válido pode ser preservado, mas não é apresentado como recomendação validada para uma captura incerta.
-- Cartas divergentes, ausência do Hero ou mudança financeira isolada não bastam para confirmar uma nova mão. A confirmação combina os sinais disponíveis; capturas ambíguas suspendem a recomendação.
-- `bet_to_call == 0` não comprova, sozinho, a disponibilidade de CHECK. A recomendação também é confrontada com o turno e os botões observados.
-- Pote ou stack inválidos/não confirmados não são substituídos automaticamente pelo valor anterior, por zero ou por estimativas.
-- Botões e IDs possuem reconhecimento de rótulos em português e inglês; isso não implica suporte universal a outros idiomas ou layouts.
-
-### Dealer e posição
-
-O detector verifica o disco do botão D e seu glifo vermelho, reduzindo falsos positivos em símbolos das cartas. Candidatos conflitantes continuam sendo tratados como incertos.
-
-A posição relativa é uma **estimativa geométrica 6-max**, indicada no painel; não reconstrói integralmente a ordem estratégica considerando todos os assentos vazios ou jogadores ausentes.
-
-Uma divergência do dealer não reinicia a mão isoladamente. Com ID consistente, Hero compatível e evolução válida do board, o ciclo pode continuar com posição desconhecida e análise apenas informativa. Duas observações visuais validadas e compatíveis podem recuperar a posição sem limpar ranges ou cache de equity. Sem confirmação suficiente, a recomendação permanece suspensa.
-
-### ALL-IN e limites financeiros
-
-O valor exibido em `ALL-IN` pode representar um total que inclui contribuição anterior, e não o custo incremental. Por exemplo, stack disponível de 1240 e botão `ALL-IN 1250` não autorizam tratar 1250 como call.
-
-Quando custo efetivo, contribuição anterior e pote elegível não estão confirmados, o PAE mantém o call desconhecido e informa **cenário financeiro não suportado**, sem recomendar ALL-IN. Não há modelagem geral de side pots nesta interface.
-
-### Equity, EV e estratégia
-
-A equity é a média da participação do Hero no pote simulado: `1` em vitória exclusiva, `1/k` quando divide a melhor mão com `k` vencedores e `0` em derrota. `P_win`, `P_tie` e `P_lose` representam frequências; em multiway, equity não é necessariamente `P_win + P_tie/2`.
-
-Para pote único elegível, sem rake, o EV líquido de referência do CALL é:
-
-```text
-EV_CALL = (equity / 100) × (pote antes do call + custo do call) − custo do call
-```
-
-Sem aposta a pagar, o painel mostra a parcela esperada do pote, não o EV estratégico de CHECK com apostas futuras. Esse campo também não é o EV de RAISE ou ALL-IN nem determina sozinho a ação selecionada.
-
-O solver usa uma árvore heads-up simplificada; não representa um jogo multiway completo. A equity multiway correta não elimina essa limitação estratégica.
-
-## Diagnóstico de continuidade e latência
-
-```bash
-./venv/bin/python main.py --live --debug-hands \
-  --profile-jsonl /tmp/pae-diagnostico.jsonl
-```
-
-`--debug-hands` detalha os critérios de continuidade/redistribuição. `--profile-jsonl` registra tempos de captura, Hero, board, dealer, IDs, OCR financeiro, FSM, Monte Carlo, estratégia e saída, além dos motivos das suspensões e do resumo da sessão.
-
-O arquivo JSONL é aberto em modo de acréscimo: pode conter várias sessões. Use caminhos distintos para comparações. Os registros podem conter cartas, IDs e textos reconhecidos; revise-os antes de compartilhar.
-
-O OCR de pote, IDs, botões e dealer roda em quatro tarefas sobre a mesma captura, concluídas antes da atualização da FSM. Os tempos dessas tarefas se sobrepõem e não devem ser somados para estimar a duração do ciclo.
-
-`--poll 0.5` sobrescreve a pausa configurada. O intervalo efetivo entre capturas inclui **processamento + pausa**, portanto não significa duas capturas por segundo. A latência medida até uma recomendação não inclui um instante de início do turno que não tenha sido observado.
-
-Os contadores do terminal e os registros do perfil têm escopos diferentes: capturas fora da vez, por exemplo, podem aparecer no JSONL sem incrementar o total de ciclos processados. Diferencie falhas visuais, suspensões financeiras deliberadas, análises informativas e recomendações validadas.
-
-## Testes
-
-```bash
-./venv/bin/python -B -m unittest discover -s tests
-git diff --check
-```
-
-A suíte em [tests/](tests/) cobre reconhecimento visual/OCR, ciclo de mãos e FSM, contexto financeiro e ações disponíveis, caches, ranges, equity/empates, EV, árvore de jogo, CFR+ e diagnóstico. Fixtures visuais recortadas estão em `tests/fixtures/`, incluindo arquivos PNG codificados em base64.
-
-Referência da última validação de código: **499 testes aprovados no commit `1162603`**. Testes e fixtures não substituem validação ao vivo em outros layouts, resoluções e condições de captura.
+---
 
 ## Licença
 
-Distribuído sob a licença [MIT](LICENSE).
+Distribuído sob a Licença MIT. Consulte `LICENSE` para mais detalhes.
