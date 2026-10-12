@@ -54,15 +54,36 @@ def _resolve_image_input(image_input: Union[str, Path, np.ndarray]) -> Optional[
     return None
 
 
+def _parse_pot_reading(raw_text: str) -> Tuple[Optional[float], str]:
+    """Última linha de valor; nunca extrai um fragmento de um token ilegível."""
+    lines = [line.strip().upper() for line in raw_text.splitlines() if line.strip()]
+    while lines and lines[-1] in ("POT", "POTE"):
+        lines.pop()
+    if not lines:
+        return None, "EMPTY"
+    match = re.fullmatch(r"(?:POTE?\s*)?([0-9]+|[0-9]{1,3}(?:,[0-9]{3})+|[0-9]{1,3}(?:\.[0-9]{3})+)", lines[-1])
+    if match is None:
+        return None, "MALFORMED"
+    return float(match.group(1).replace(",", "").replace(".", "")), "NUMERIC"
+
+
 def extract_pot(
     image_path_or_frame: Union[str, Path, np.ndarray] = "mesa_6.png",
     pot_roi: Optional[Dict[str, int]] = None,
     default_value: Optional[float] = 0.0,
-    verbose: bool = True
+    verbose: bool = True,
+    diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Optional[float]:
     """
-    Extrai numericamente o valor do pote atual da mesa utilizando Visão Computacional e OCR.
+    Extrai o pote confrontando pré-processamentos da MESMA captura, sem histórico.
+
+    Leituras não vazias não podem conflitar nem conter tokens malformados.
+    Uma variante vazia não refuta outra; concordância não garante acerto do OCR.
+    Conflitos retornam None mesmo com default_value; --live usa default_value=None.
     """
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update(status="UNKNOWN", reason="Imagem/ROI indisponível", readings=[])
     if pot_roi is None:
         pot_roi = dict(POT_ROI)
 
@@ -97,55 +118,47 @@ def extract_pot(
         return default_value
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
-
+    enlarged = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    variants = (
+        ("native_fixed", cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)[1]),
+        ("native_otsu", cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]),
+        ("enlarged_fixed", cv2.threshold(enlarged, 180, 255, cv2.THRESH_BINARY)[1]),
+    )
     tess_config = f"--psm 6 -c tessedit_char_whitelist={OCR_WHITELIST_DIGITS}"
-    raw_text = pytesseract.image_to_string(thresh, config=tess_config) or ""
+    readings = []
+    for method, binary in variants:
+        raw_text = pytesseract.image_to_string(binary, config=tess_config) or ""
+        value, status = _parse_pot_reading(raw_text)
+        readings.append(dict(method=method, raw_text=raw_text, value=value, status=status))
 
-    if not raw_text.strip():
-        _, otsu_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        raw_text = pytesseract.image_to_string(otsu_thresh, config=tess_config) or ""
+    values = {reading["value"] for reading in readings if reading["value"] is not None}
+    pot_value = next(iter(values), None)
+    if len(values) > 1:
+        status, reason = "CONFLICT", "Leituras numéricas conflitantes na mesma captura; pote não confirmado."
+    elif any(reading["status"] == "MALFORMED" for reading in readings):
+        status, reason = "AMBIGUOUS", "Token do pote incompleto ou malformado; pote não confirmado."
+    elif pot_value is None:
+        status, reason = "UNKNOWN", "Nenhum valor do pote reconhecido na captura atual."
+    elif not math.isfinite(pot_value) or pot_value > MAX_REALISTIC_POT:
+        status, reason = "INVALID", "Valor do pote fora da validação de sanidade existente."
+    else:
+        status, reason = "READ", "Leitura numérica sem divergências nos pré-processamentos disponíveis."
 
-    if not raw_text.strip():
-        # Dígitos pequenos no badge do Replay podem ser ignorados mesmo com
-        # a ROI correta. Amplia os pixels da captura atual, sem estimar fichas
-        # nem substituir leituras existentes. Mantém segmentação e whitelist.
-        enlarged = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-        _, enlarged_thresh = cv2.threshold(enlarged, 180, 255, cv2.THRESH_BINARY)
-        raw_text = pytesseract.image_to_string(enlarged_thresh, config=tess_config) or ""
-
-    lines = [l.strip() for l in raw_text.strip().splitlines() if l.strip()]
-    pot_value = None
-    for line in reversed(lines):
-        clean_line = line.replace(",", "").replace(".", "")
-        if not clean_line:
-            continue
-        try:
-            val = float(clean_line)
-            pot_value = val
-            break
-        except ValueError:
-            m = re.search(r"\d+", clean_line)
-            if m:
-                pot_value = float(m.group(0))
-                break
-
-    if pot_value is None:
+    if diagnostics is not None:
+        diagnostics.update(status=status, reason=reason, readings=readings,
+                           roi=dict(top=y1, left=x1, width=x2-x1, height=y2-y1))
+    if status != "READ":
         if verbose:
-            print("[AVISO OCR] Nenhum dígito legível identificado na região do pote. Retornando padrão seguro.")
-        return default_value
-
-    if pot_value > MAX_REALISTIC_POT:
-        if verbose:
-            print(f"[AVISO OCR] Leitura do Pote exorbitante ({pot_value}). Retornando valor seguro anterior.")
-        return default_value
+            print(f"[AVISO OCR] {reason} Leituras: {readings}")
+        # A ambiguidade não pode virar zero nem reutilizar um pote anterior.
+        return None if status in ("CONFLICT", "AMBIGUOUS") else default_value
 
     if verbose:
         print("=" * 70)
         print("LEITURA ÓPTICA DO POTE (OCR) - Poker Analytics")
         print("=" * 70)
         print(f"Coordenadas da ROI: {{'top': {top}, 'left': {left}, 'width': {width}, 'height': {height}}}")
-        print(f"Texto detectado pelo Tesseract: {repr(raw_text.strip())}")
+        print(f"Leituras do Tesseract: {readings}")
         print(f"Valor numérico do Pote consolidado: {pot_value:.1f} fichas")
         print("=" * 70 + "\n")
 

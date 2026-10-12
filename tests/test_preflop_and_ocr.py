@@ -27,7 +27,8 @@ class TestPreflopAndOCR(unittest.TestCase):
     @patch('pytesseract.image_to_string')
     def test_ocr_sanity_limit(self, mock_tesseract):
         """Garante que leituras astronômicas (> MAX_REALISTIC_POT) sejam rejeitadas pelo filtro de sanidade."""
-        mock_tesseract.return_value = "93700.0"
+        # Valor inteiro bem formado: testa o teto, não a rejeição de token decimal.
+        mock_tesseract.return_value = "93700"
         dummy_img = np.zeros((800, 1200, 3), dtype=np.uint8)
 
         pot_value = extract_pot(image_path_or_frame=dummy_img, default_value=123.0, verbose=False)

@@ -38,23 +38,23 @@ class TestPotOCRRegression(unittest.TestCase):
                               ("POTE\n3,840\n", 3840), ("POT\n3.840\n", 3840)):
             with self.subTest(raw=raw), patch.object(ocr_reader.pytesseract, "image_to_string", return_value=raw) as ocr:
                 self.assertEqual(ocr_reader.extract_pot(frame, default_value=None, verbose=False), expected)
-                ocr.assert_called_once()  # Não muda uma leitura numérica já disponível.
+                self.assertEqual(ocr.call_count, 3)  # Confronta a leitura com a mesma captura em outras condições.
 
     def test_unreadable_or_none_stays_unknown(self):
         for raw in ("", "   ", "POTE\n???", "??\n.\n", None):
             with self.subTest(raw=raw), patch.object(ocr_reader.pytesseract, "image_to_string", return_value=raw):
                 self.assertIsNone(ocr_reader.extract_pot(real_pot_frame(), default_value=None, verbose=False))
 
-    def test_enlarged_retry_only_after_both_empty_reads(self):
+    def test_empty_native_reads_do_not_prevent_enlarged_read(self):
         with patch.object(ocr_reader.pytesseract, "image_to_string", side_effect=["", "", "13\n"]) as ocr:
             self.assertEqual(ocr_reader.extract_pot(real_pot_frame(), default_value=None, verbose=False), 13)
         self.assertEqual([c.args[0].shape for c in ocr.call_args_list], [(95, 220), (95, 220), (285, 660)])
         self.assertEqual(len({c.kwargs["config"] for c in ocr.call_args_list}), 1)
 
-    def test_otsu_success_does_not_trigger_enlarged_retry(self):
-        with patch.object(ocr_reader.pytesseract, "image_to_string", side_effect=["", "13\n"]) as ocr:
+    def test_otsu_success_is_checked_against_enlarged_read(self):
+        with patch.object(ocr_reader.pytesseract, "image_to_string", side_effect=["", "13\n", "13\n"]) as ocr:
             self.assertEqual(ocr_reader.extract_pot(real_pot_frame(), default_value=None, verbose=False), 13)
-            self.assertEqual(ocr.call_count, 2)
+            self.assertEqual(ocr.call_count, 3)
 
     def test_recovery_has_no_persistent_none_or_previous_value(self):
         with patch.object(ocr_reader.pytesseract, "image_to_string", return_value=""):
