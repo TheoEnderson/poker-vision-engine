@@ -603,10 +603,11 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
     Identifica a posição do Hero na mesa (BTN, SB, BB, UTG, MP, CO)
     baseado na posição do botão de Dealer (D) e do nome do Hero.
     Assume uma mesa 6-max (layout padrão).
-    diagnostics expõe o score bruto do template e o motivo, sem mudar a classificação.
+    Valida o disco inteiro e o D vermelho na escala observada. A posição é
+    relativa à geometria 6-max; não infere ocupação/folds dos demais assentos.
     """
     if diagnostics is not None:
-        diagnostics.update(confidence=None, reason="imagem indisponível", layout="6-max")
+        diagnostics.update(confidence=None, reason="imagem indisponível", layout="6-max", validated=False)
     img = _resolve_image_input(image_path_or_frame)
     if img is None:
         return "Desconhecida"
@@ -633,32 +634,51 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
     if w >= 600 and h >= 400:
         y_offset, x_offset = 50, 60
         search_img = img[y_offset:h - 80, x_offset:w - 60]
-        res = cv2.matchTemplate(search_img, template, cv2.TM_CCOEFF_NORMED)
-        locs = np.where(res >= DEFAULT_DEALER_THRESHOLD)
+        # Um match 16x16 dentro de uma carta não é o disco D de 28x28.
+        # Localiza componentes brancos inteiros e normaliza sua escala antes
+        # de comparar. O D vermelho deve concordar separadamente com o template.
+        hsv = cv2.cvtColor(search_img, cv2.COLOR_BGR2HSV)
+        white = ((hsv[:, :, 1] < 55) & (hsv[:, :, 2] > 180)).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        def red_glyph(image):
+            b, g, r = cv2.split(image.astype(np.int16))
+            return ((r - g > 50) & (r - b > 50) & (r > 120)).astype(np.uint8) * 255
+        template_red = red_glyph(template)
         candidates = []
-        for y, x in zip(locs[0], locs[1]):
-            val = float(res[y, x])
+        for contour in contours:
+            x, y, cw, ch = cv2.boundingRect(contour)
+            if min(cw, ch) < min(tw, th) // 2:
+                continue
             gy = y + y_offset
             gx = x + x_offset
             if gy > 0.85 * h or gy < 0.08 * h:
                 continue
             if gx < 350 and gy > 0.75 * h:
                 continue
-            patch = search_img[y:y+th, x:x+tw]
-            p_max = int(np.max(patch))
-            p_min = int(np.min(patch))
-            # O botão de dealer é um disco claro/branco de alto contraste; descarta feltro plano
-            if p_max >= 180 and (p_max - p_min) >= 90:
-                candidates.append((val, gx + tw // 2, gy + th // 2))
+            patch = cv2.resize(search_img[y:y+ch, x:x+cw], (tw, th))
+            val = float(cv2.matchTemplate(patch, template, cv2.TM_CCOEFF_NORMED)[0, 0])
+            glyph_score = float(cv2.matchTemplate(red_glyph(patch), template_red, cv2.TM_CCOEFF_NORMED)[0, 0])
+            score = min(val, glyph_score)
+            best_score = max(best_score, score)
+            if score >= DEFAULT_DEALER_THRESHOLD:
+                candidates.append(dict(confidence=val, glyph_score=glyph_score,
+                                       box=[gx, gy, cw, ch], center=[gx + cw // 2, gy + ch // 2]))
 
-        if candidates:
-            candidates.sort(key=lambda c: c[0], reverse=True)
-            best_score, dealer_x, dealer_y = candidates[0]
+        if diagnostics is not None:
+            diagnostics['candidates'] = candidates
+        if len(candidates) > 1:
+            if diagnostics is not None:
+                diagnostics.update(confidence=best_score, reason="múltiplos discos D; dealer ambíguo")
+            return "Desconhecida"
+        if len(candidates) == 1:
+            selected = candidates[0]
+            best_score = selected['confidence']
+            dealer_x, dealer_y = selected['center']
+            if diagnostics is not None:
+                diagnostics.update(dealer_box=selected['box'], dealer_center=selected['center'],
+                                   glyph_score=selected['glyph_score'])
             dealer_angle = math.degrees(math.atan2(dealer_y - cy, dealer_x - cx))
             dealer_found = True
-        else:
-            _, max_val, _, _ = cv2.minMaxLoc(res)
-            best_score = float(max_val)
     else:
         y_offset, x_offset = 0, 0
         search_img = img
@@ -673,6 +693,7 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
 
     if diagnostics is not None:
         diagnostics.update(confidence=best_score,
+                           validated=dealer_found,
                            reason="dealer detectado" if dealer_found else "score do dealer abaixo do limiar")
 
     if not dealer_found:
@@ -761,7 +782,10 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
     dist = (hero_idx - dealer_idx) % 6
     position = positions_6max[dist]
     if diagnostics is not None:
-        diagnostics.update(reason="posição inferida no layout 6-max", position=position)
+        diagnostics.update(reason="posição inferida no layout 6-max", position=position,
+                           dealer_seat=ideal_seats_6[dealer_idx][1], hero_seat=ideal_seats_6[hero_idx][1],
+                           dealer_angle=dealer_angle, hero_angle=hero_angle,
+                           position_basis="geometria 6-max; ocupação dos assentos não confirmada")
 
     if verbose:
         print(f"[OCR] Dealer={dealer_angle:.1f}° (idx {dealer_idx}), Hero={hero_angle:.1f}° (idx {hero_idx}) -> Posição: {position}")

@@ -120,6 +120,10 @@ class PokerAnalyticsApp:
         self._preflop_end_seen = False
         self._redeal_gap_seen = False
         self._hand_position = None
+        self._position_uncertain = False
+        self._position_candidate = None
+        self._position_candidate_count = 0
+        self._position_basis = None
         self._hand_identity = None
         self._hand_identity_conflict = False
         self._away_board_candidate = None
@@ -161,6 +165,10 @@ class PokerAnalyticsApp:
         self._new_hand_candidate = None
         self._new_hand_candidate_count = 0
         self.opponent_model.reset()
+        self._position_uncertain = False
+        self._position_candidate = None
+        self._position_candidate_count = 0
+        self._position_basis = None
 
     def reset_hand(self, hero_cards: Optional[List[str]] = None, reason: str = "Reset de mão"):
         """Reset explícito; hero_cards só deve conter cartas adquiridas para a nova mão."""
@@ -280,6 +288,9 @@ class PokerAnalyticsApp:
                         board_observado_sem_hero=list(getattr(self, "_away_board_witness", None) or []))
 
         def report(status, reason):
+            if (status in ("CURRENT", "NEW_HAND") and position and dealer_diagnostics
+                    and dealer_diagnostics.get("validated") is True):
+                self._position_basis = dealer_diagnostics.get("position_basis")
             missing = []
             if not valid_hero:
                 missing.append("duas cartas do Hero reconhecidas")
@@ -392,8 +403,31 @@ class PokerAnalyticsApp:
             return report("UNCERTAIN", "Intervalo observado, mas redistribuição ainda indistinguível de falha visual")
         if not self.state_machine.update_board(board, has_hero_cards=True):
             return report("UNCERTAIN", "Board incompatível com a mão conhecida; reset não confirmado")
-        if dealer_changed:
-            return report("UNCERTAIN", "Dealer/posição divergente sem redistribuição corroborada")
+        if dealer_changed or getattr(self, '_position_uncertain', False):
+            if dealer_unchanged:
+                self.hero_position = hand_position
+                self._position_uncertain = False
+                self._position_candidate = None
+                self._position_candidate_count = 0
+            else:
+                self.hero_position = "Desconhecida"
+                self._position_uncertain = True
+                candidate_position = ((known_identity, position, dealer_diagnostics.get('dealer_seat'))
+                                      if identity_continuity and position and dealer_diagnostics
+                                      and dealer_diagnostics.get('validated') is True else None)
+                self._position_candidate_count = (
+                    getattr(self, '_position_candidate_count', 0) + 1
+                    if candidate_position and candidate_position == getattr(self, '_position_candidate', None)
+                    else 1 if candidate_position else 0)
+                self._position_candidate = candidate_position
+                if self._position_candidate_count >= 2:
+                    self._hand_position = position
+                    self.hero_position = position
+                    self._position_uncertain = False
+                    self._position_candidate = None
+                    self._position_candidate_count = 0
+                elif not identity_continuity:
+                    return report("UNCERTAIN", "Dealer/posição divergente: identidade da mão não corroborada; posição não confiável")
         self._hero_was_absent = False
         self._hand_boundary_seen = False
         self._redeal_gap_seen = False
@@ -408,7 +442,8 @@ class PokerAnalyticsApp:
                 self.hero_position = position
         if known_identity is None:
             self._hand_identity = hand_identity
-        return report("CURRENT", "Captura compatível com a mão conhecida")
+        return report("CURRENT", "Identidade e board da mão confirmados; posição divergente aguardando dealer validado"
+                      if getattr(self, '_position_uncertain', False) else "Captura compatível com a mão conhecida")
 
     def process_frame(
         self,
@@ -535,6 +570,8 @@ class PokerAnalyticsApp:
         elif (not _valid_chip_amount(stack) or stack == 0
               or not _valid_chip_amount(amount) or amount > stack):
             status = "Stack/valor da ação inválido ou valor recomendado excede o stack; recomendação suspensa."
+        elif analysis.get("position_valid") is False:
+            status = "Mão confirmada, mas posição/dealer divergentes; análise informativa, sem recomendação atual validada."
         elif (analysis.get("action_details") or {}).get("supported") is False:
             status = analysis["reason"] + " Contexto de aposta não suportado; recomendação suspensa."
         elif context:
@@ -875,6 +912,8 @@ class PokerAnalyticsApp:
                 "recalculated": False,
             }
 
+        analysis["position_valid"] = not getattr(self, '_position_uncertain', False)
+        analysis["position_basis"] = getattr(self, '_position_basis', None)
         self._with_action_context(analysis, context)
 
         # Grava os dados da simulação no CSV de Machine Learning
@@ -946,6 +985,8 @@ class PokerAnalyticsApp:
             f"{C_BOLD}JOGO ATUAL:{C_RESET}      {a['hero_hand']}"
         )
         pos_str = a.get("hero_position", getattr(self, "hero_position", "Desconhecida"))
+        if a.get("position_basis") and pos_str != "Desconhecida":
+            pos_str += " (estimativa 6-max)"
         num_opponents = a.get("num_opponents", self.num_opponents)
         print(
             f"║ {C_BOLD}POSIÇÃO HERO:{C_RESET}     {pos_str:<14s} ║ "
@@ -1190,7 +1231,8 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
 
             pot_size = observed_pot
             
-            if new_position != "Desconhecida" and app.hero_position == "Desconhecida":
+            if (new_position != "Desconhecida" and app.hero_position == "Desconhecida"
+                    and not getattr(app, '_position_uncertain', False)):
                 app.hero_position = new_position
 
             app.hero_stack = timed_call("stack_ocr", extract_hero_stack,

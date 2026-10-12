@@ -165,7 +165,11 @@ class TestPreflopHandIdentity(unittest.TestCase):
     def test_single_dealer_false_positive_does_not_reset(self):
         self.live([capture(), capture(position="CO"), capture()])
         self.assert_continuity()
-        self.assertEqual(len(self.analyses), 2)
+        self.assertEqual(len(self.analyses), 3)
+        self.assertFalse(self.analyses[1]['action_available'])
+        self.assertEqual(self.analyses[1]['hero_position'], UNKNOWN)
+        self.assertTrue(self.analyses[-1]['position_valid'])
+        self.assertEqual(self.analyses[-1]['hero_position'], 'BB')
 
     def test_repeated_dealer_and_card_false_positives_with_same_identity_do_not_reset(self):
         wrong = capture(NEW, position="CO", pot=15)
