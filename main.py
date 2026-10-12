@@ -38,6 +38,7 @@ from src.engine import (
 from src.engine.dataset_logger import DatasetLogger
 from src.ocr import (
     detect_turn_and_bet_to_call,
+    extract_hand_identity,
     extract_hero_stack,
     extract_pot,
     extract_hero_position,
@@ -116,6 +117,8 @@ class PokerAnalyticsApp:
         self._preflop_end_seen = False
         self._redeal_gap_seen = False
         self._hand_position = None
+        self._hand_identity = None
+        self._hand_identity_conflict = False
         self._away_board_candidate = None
         self._away_board_count = 0
         self._away_board_witness = None
@@ -147,6 +150,8 @@ class PokerAnalyticsApp:
         self._preflop_end_seen = False
         self._redeal_gap_seen = False
         self._hand_position = None
+        self._hand_identity = None
+        self._hand_identity_conflict = False
         self._away_board_candidate = None
         self._away_board_count = 0
         self._away_board_witness = None
@@ -172,12 +177,14 @@ class PokerAnalyticsApp:
                      action_context: Optional[Dict[str, Any]] = None,
                      hero_position: Optional[str] = None,
                      dealer_diagnostics: Optional[Dict[str, Any]] = None,
-                     observed_opponents: Optional[int] = None) -> str:
+                     observed_opponents: Optional[int] = None,
+                     hand_identity: Optional[tuple[str, str]] = None) -> str:
         """Observa o ciclo mesmo fora do turno; não calcula nem executa ações.
 
         No pré-flop, board vazio e hole cards divergentes não corroboram nova
-        mão: exige encerramento observado ou dealer alterado corroborado por
-        redistribuição. A posição vem do reconhecedor existente (mesa 6-max).
+        mão: exige encerramento observado, dealer alterado corroborado ou o
+        vínculo explícito Atual/Anterior com a mão conhecida. A posição vem do
+        reconhecedor existente (mesa 6-max).
         Após o flop, preserva a confirmação por board reiniciado/redistribuição.
         Board ausente isoladamente nunca confirma mão.
         """
@@ -198,6 +205,13 @@ class PokerAnalyticsApp:
         hand_position = getattr(self, "_hand_position", None)
         dealer_changed = bool(position and hand_position and position != hand_position)
         dealer_unchanged = bool(position and position == hand_position)
+        known_identity = getattr(self, "_hand_identity", None)
+        identity_changed = bool(known_identity and hand_identity and hand_identity != known_identity)
+        # Os números vêm do painel Atual/Anterior, não de cartas, pote ou posição.
+        # Exige vínculo exato; não presume que IDs são contadores consecutivos.
+        identity_redeal = bool(identity_changed and hand_identity[0] != known_identity[0]
+                               and hand_identity[1] == known_identity[0])
+        identity_continuity = bool(known_identity and hand_identity == known_identity)
         valid_hero = len(hero_cards) == 2 and len(set(hero_cards)) == 2 and all(
             c and c.lower() not in ("desconhecida", "vazio", "none", "--") for c in hero_cards
         )
@@ -256,6 +270,8 @@ class PokerAnalyticsApp:
                         fim_preflop_observado=preflop_end,
                         posicao_da_mao=hand_position, posicao_observada=position,
                         dealer_alterado=dealer_changed,
+                        identidade_da_mao=known_identity, identidade_observada=hand_identity,
+                        identidade_alterada=identity_changed, identidade_vinculada=identity_redeal,
                         intervalo_em_espera=getattr(self, "_redeal_gap_seen", False),
                         board_observado_sem_hero=list(getattr(self, "_away_board_witness", None) or []))
 
@@ -303,20 +319,31 @@ class PokerAnalyticsApp:
             self._new_hand_candidate_count = 0
             return report("UNCERTAIN", f"Cartas duplicadas na captura: {', '.join(duplicates)}")
 
-        proposal = valid_hero and complete and (
+        if identity_changed:
+            self._hand_identity_conflict = True
+        elif identity_continuity:
+            self._hand_identity_conflict = False
+        legacy_evidence = (
             witnessed_clear or dealer_redeal or (in_preflop and preflop_end)
             or (not in_preflop and (
                 (changed and (clear or restarted)) or restarted or (boundary and clear and pot_changed)
             ))
         )
+        proposal = valid_hero and complete and (
+            identity_redeal or (not identity_changed and not identity_continuity and legacy_evidence)
+        )
         if proposal:
-            candidate = (tuple(sorted(hero_cards)), tuple(valid_board), position if dealer_redeal else None)
+            candidate = (tuple(sorted(hero_cards)), tuple(valid_board),
+                         position if dealer_redeal and not identity_redeal else None,
+                         hand_identity if identity_redeal else None)
             count = getattr(self, "_new_hand_candidate_count", 0) + 1 if candidate == getattr(self, "_new_hand_candidate", None) else 1
             self._new_hand_candidate = candidate
             self._new_hand_candidate_count = count
             criteria["observacoes_compativeis"] = count
             if count >= 2:
-                reason = ("Nova mão confirmada: board observado sem Hero, mesa limpa e redistribuição corroborada"
+                reason = ("Nova mão confirmada: vínculo Atual/Anterior e redistribuição corroborada"
+                          if identity_redeal else
+                          "Nova mão confirmada: board observado sem Hero, mesa limpa e redistribuição corroborada"
                           if witnessed_clear else "Nova mão confirmada: dealer alterado e redistribuição corroborada"
                           if dealer_redeal else
                           "Nova mão confirmada: encerramento pré-flop observado e redistribuição corroborada"
@@ -324,6 +351,7 @@ class PokerAnalyticsApp:
                 print(f"\n[INFO] {reason}")
                 self.reset_hand(hero_cards=hero_cards, reason=reason)
                 self._hand_position = position
+                self._hand_identity = hand_identity
                 if position:
                     self.hero_position = position
                 self.state_machine.update_board(board, has_hero_cards=True)
@@ -335,18 +363,26 @@ class PokerAnalyticsApp:
         # positiva contraditória (cartas/board/dealer) o descarta imediatamente.
         hero_known = PokerHandStateMachine.filter_valid_cards(hero_cards)
         missing_dealer = bool(candidate and candidate[2] is not None and position is None)
-        uncontradicted = (candidate is not None and (not valid_hero or not complete or missing_dealer)
+        missing_identity = bool(candidate and candidate[3] is not None and hand_identity is None)
+        uncontradicted = (candidate is not None and (not valid_hero or not complete or missing_dealer or missing_identity)
                          and set(hero_known) <= set(candidate[0])
                          and (not valid_board or valid_board == list(candidate[1])[:len(valid_board)])
-                         and (position is None or candidate[2] is None or position == candidate[2]))
+                         and (position is None or candidate[2] is None or position == candidate[2])
+                         and (hand_identity is None or candidate[3] is None or hand_identity == candidate[3]))
         if not uncontradicted:
             self._new_hand_candidate = None
             self._new_hand_candidate_count = 0
         if not valid_hero or not complete:
             return report("UNCERTAIN", "Hero/board não reconhecido por completo; ciclo da mão não confirmado")
+        if identity_changed:
+            return report("UNCERTAIN", "Identidade da mão divergente sem vínculo Atual/Anterior confirmado")
+        if missing_identity and uncontradicted:
+            return report("UNCERTAIN", "Redistribuição candidata; identidade da mão temporariamente ilegível")
+        if getattr(self, "_hand_identity_conflict", False) and hand_identity is None:
+            return report("UNCERTAIN", "Mudança de identidade ainda não esclarecida; aguardando leitura Atual/Anterior")
         if changed:
             return report("UNCERTAIN", "Cartas do Hero divergentes sem encerramento confirmado ou redistribuição corroborada")
-        if in_preflop and boundary and clear and not dealer_unchanged:
+        if in_preflop and boundary and clear and not (dealer_unchanged or identity_continuity):
             return report("UNCERTAIN", "Retorno do Hero após intervalo ambíguo: sem encerramento confirmado nem dealer compatível")
         if boundary and clear and not in_preflop:
             return report("UNCERTAIN", "Intervalo observado, mas redistribuição ainda indistinguível de falha visual")
@@ -366,6 +402,8 @@ class PokerAnalyticsApp:
             self._hand_position = position
             if position:
                 self.hero_position = position
+        if known_identity is None:
+            self._hand_identity = hand_identity
         return report("CURRENT", "Captura compatível com a mão conhecida")
 
     def process_frame(
@@ -1044,6 +1082,7 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
             # O ciclo da mão não depende de haver botões ativos nem de ler CALL.
             detected_cards = detect_board(frame, verbose=False, save_unknown=False)
             observed_pot = extract_pot(frame, default_value=None, verbose=False)
+            observed_identity = extract_hand_identity(frame)
             turn_info = detect_turn_and_bet_to_call(frame, verbose=False)
             # A mudança de dealer é evidência do ciclo, inclusive fora da vez.
             dealer_diagnostics = {"confidence": None, "reason": "detalhes não fornecidos"}
@@ -1055,7 +1094,8 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
             app._observe_action_context(turn_info)
             hand_status = app.observe_hand(hero_detected, detected_cards, observed_pot, debug=debug_hands,
                                            action_context=turn_info, hero_position=new_position,
-                                           dealer_diagnostics=dealer_diagnostics, observed_opponents=observed_opponents)
+                                           dealer_diagnostics=dealer_diagnostics, observed_opponents=observed_opponents,
+                                           hand_identity=observed_identity)
             if hand_status == "UNCERTAIN":
                 app.total_frames_processed += 1
                 app.total_uncertain_frames = getattr(app, "total_uncertain_frames", 0) + 1
