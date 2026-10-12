@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import cv2
 import numpy as np
+from src.diagnostics import timed
 
 from src.config import (
     CARD_BRIGHTNESS_THRESHOLD,
@@ -461,6 +462,7 @@ def find_and_detect_hero_cards(
     hero_coords_hint: Optional[Dict[str, int]] = None,
     return_coords: bool = False,
     save_unknown: bool = True,
+    diagnostics: Optional[Dict] = None,
 ) -> Union[List[str], Tuple[List[str], Optional[Dict[str, int]]]]:
     """
     Localiza dinamicamente as duas cartas abertas do Hero em qualquer posição da mesa
@@ -470,6 +472,10 @@ def find_and_detect_hero_cards(
     """
     if board_coords is None:
         board_coords = {"top": 415, "left": 734, "width": 449, "height": 109}
+    if diagnostics is None:
+        diagnostics = {}
+    diagnostics.clear()
+    diagnostics.update(contours=[], slots=[], rejection=None)
 
     ranks, suits = load_templates()
 
@@ -513,11 +519,27 @@ def find_and_detect_hero_cards(
         cbx, cby, cbw, cbh = cv2.boundingRect(c)
         if cby > 850 or cbx < 80 or cbx > w - 80:
             continue
+        if area > 1500:
+            diagnostics["contours"].append(dict(box=[cbx, cby, cbw, cbh], area=area))
+        if area > 1500 and 40 < cbw < 250 and cbh >= 120:
+            # Nas capturas reais, a borda estreita do avatar une-se à carta.
+            # A abertura 5x5 separa essa borda (3x3 não basta) SOMENTE da
+            # máscara de localização; os pixels usados na classificação são
+            # os originais. Mantém os limites geométricos das cartas.
+            component = white_u8[cby:cby + cbh, cbx:cbx + cbw]
+            separated = cv2.morphologyEx(component, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+            parts, _ = cv2.findContours(separated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for part in parts:
+                px, py, pw, ph = cv2.boundingRect(part)
+                if 1500 < cv2.contourArea(part) < 10000 and 40 < pw < 120 and 40 < ph < 120:
+                    candidates.append((cbx + px, cby + py, pw, ph))
+                    diagnostics.setdefault("separated_cards", []).append([cbx + px, cby + py, pw, ph])
         if 1500 < area < 10000 and 40 < cbw < 120 and 40 < cbh < 120:
             candidates.append((cbx, cby, cbw, cbh))
         elif 3000 < area < 20000 and 120 < cbw < 250 and 40 < cbh < 120:
             candidates.append((cbx, cby, cbw, cbh))
 
+    @timed("hero_classification")
     def match_hero_slot(slot_img: np.ndarray, is_second_slot: bool = False):
         sgray = cv2.cvtColor(slot_img, cv2.COLOR_BGR2GRAY)
         shsv = cv2.cvtColor(slot_img, cv2.COLOR_BGR2HSV)
@@ -546,6 +568,9 @@ def find_and_detect_hero_cards(
             if (best_r_score >= local_thresh and best_s_score >= local_thresh)
             else "Desconhecida"
         )
+        diagnostics["slots"].append(dict(card=card_str, rank=best_r, rank_score=float(best_r_score),
+                                         suit=best_s, suit_score=float(best_s_score),
+                                         suit_region_found=suit_reg is not None))
         return card_str, best_r, best_r_score, best_s, best_s_score
 
     candidate_boxes = []
@@ -587,11 +612,13 @@ def find_and_detect_hero_cards(
             # O assento mais próximo continua sendo o alvo mesmo se estiver ilegível.
             candidate_boxes = close_boxes[:1]
         else:
+            diagnostics["rejection"] = "NO_CANDIDATE_AT_KNOWN_SEAT"
             if verbose:
                 print("[INFO] Nenhuma carta aberta detectada no assento conhecido do Hero.")
             return ([], None) if return_coords else []
 
     if not candidate_boxes:
+        diagnostics["rejection"] = "NO_CARD_PAIR_GEOMETRY"
         if verbose:
             print("[INFO] Nenhuma carta aberta do Hero detectada fora do board (Fold ou mesa vazia).")
         return ([], None) if return_coords else []
@@ -620,6 +647,7 @@ def find_and_detect_hero_cards(
                     0, min(by + bh, hy + hh) - max(by, hy)
                 )
                 if overlap < 0.5 * min(bw * bh, hw * hh):
+                    diagnostics["rejection"] = "MULTIPLE_SEATS_WITH_OPEN_CARDS"
                     if verbose:
                         print("[INFO] Múltiplas mãos abertas sem assento do Hero definido. Retornando [].")
                     return ([], None) if return_coords else []
@@ -629,6 +657,7 @@ def find_and_detect_hero_cards(
             best_res = last_res
 
     if not best_cards:
+        diagnostics["rejection"] = "CLASSIFICATION_UNCERTAIN"
         if last_res:
             box, slot1, slot2, c1_str, r1, sr1, s1, ss1, c2_str, r2, sr2, s2, ss2 = last_res
             if save_unknown and c1_str == "Desconhecida":

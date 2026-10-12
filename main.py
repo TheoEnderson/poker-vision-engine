@@ -10,9 +10,12 @@ import json
 import sys
 import time
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 import numpy as np
+from src.diagnostics import timed, timed_call, note, milestone, start_cycle, finish_cycle, profile_session
 
 # Garante acesso à raiz do projeto e aos pacotes de src/
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -173,6 +176,7 @@ class PokerAnalyticsApp:
             self._decision_generation = getattr(self, "_decision_generation", 0) + 1
         self._hero_turn_observed = active
 
+    @timed("fsm")
     def observe_hand(self, hero_cards: List[str], board: List[str], pot: Optional[float], debug: bool = False,
                      action_context: Optional[Dict[str, Any]] = None,
                      hero_position: Optional[str] = None,
@@ -485,8 +489,12 @@ class PokerAnalyticsApp:
             detected_cards, actual_pot, actual_bet, show_dashboard, action_context=turn_info
         )
 
+    @timed("financial_validation")
     def _financial_context_error(self, pot, call, context) -> Optional[str]:
         """Não estima fichas nem converte aposta nominal em call all-in."""
+        if context and context.get("action_type") == "ALL-IN":
+            return ("ALL-IN observado: valor exibido não confirma custo incremental, contribuição anterior "
+                    "ou pote elegível (possíveis devoluções/side pots). Análise financeira suspensa.")
         if not _valid_chip_amount(self.hero_stack):
             return "Stack não confirmado ou inválido na captura atual."
         if not _valid_chip_amount(pot):
@@ -598,7 +606,7 @@ class PokerAnalyticsApp:
             self.state_machine.board_read_status = "CONFLICT"
             board_is_valid = False
         else:
-            board_is_valid = self.state_machine.update_board(detected_cards, has_hero_cards=has_valid_hero)
+            board_is_valid = timed_call("fsm", self.state_machine.update_board, detected_cards, has_hero_cards=has_valid_hero)
         current_state = self.state_machine.current_state
         current_board = self.state_machine.board
 
@@ -773,7 +781,7 @@ class PokerAnalyticsApp:
                           id(self.opponent_model), getattr(self.opponent_model, "revision", 0))
             equity_cached = equity_key == getattr(self, "_equity_cache_key", None)
             if not equity_cached:
-                result = calculate_equity(
+                result = timed_call("monte_carlo", calculate_equity,
                     hero_cards=self.hero_cards,
                     board_cards=current_board,
                     num_opponents=self.num_opponents,
@@ -788,7 +796,8 @@ class PokerAnalyticsApp:
             outs, draw_name = detect_draws(self.hero_cards, current_board)
 
             # Motor de Risco e Tomada de Decisão
-            decision = make_decision(
+            note(strategy_engine="blueprint" if current_state == HandState.PRE_FLOP else "cfr")
+            decision = timed_call("strategy", make_decision,
                 loose_mode=("--loose" in sys.argv),
                 p_win=p_win,
                 p_lose=p_lose,
@@ -1005,6 +1014,7 @@ class PokerAnalyticsApp:
         print(f"╚{sep_double}╝\n")
 
 
+@profile_session
 def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
     """Executa o Poker Analytics Engine em modo assistente ao vivo (tempo real)."""
     C_RESET = "\033[0m"
@@ -1031,6 +1041,9 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
 
     uncertain_key = None
     uncertain_count = 0
+    # Todas as tarefas consomem a mesma captura imutável e são concluídas antes
+    # de atualizar a FSM. Nenhum resultado óptico é reaproveitado entre frames.
+    ocr_pool = ThreadPoolExecutor(max_workers=4)
 
     def flush_uncertain():
         nonlocal uncertain_key, uncertain_count
@@ -1040,14 +1053,19 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
 
     try:
         while True:
-            frame = grab_screen()
-            hero_res = find_and_detect_hero_cards(
+            start_cycle()
+            frame = timed_call("capture", grab_screen)
+            note(capture_complete=True, frame_shape=list(frame.shape) if isinstance(frame, np.ndarray) else None)
+            hero_diagnostics = {}
+            hero_res = timed_call("hero_total", find_and_detect_hero_cards,
                 frame,
                 verbose=False,
                 hero_coords_hint=getattr(app, 'hero_coords', None),
                 return_coords=True,
                 save_unknown=False,
+                diagnostics=hero_diagnostics,
             )
+            note(hero_detection=hero_diagnostics)
             hero_detected, detected_box = hero_res
             if detected_box is not None:
                 app.hero_coords = detected_box
@@ -1080,15 +1098,26 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
                 already_has_valid_hand = True
 
             # O ciclo da mão não depende de haver botões ativos nem de ler CALL.
-            detected_cards = detect_board(frame, verbose=False, save_unknown=False)
-            observed_pot = extract_pot(frame, default_value=None, verbose=False)
-            observed_identity = extract_hand_identity(frame)
-            turn_info = detect_turn_and_bet_to_call(frame, verbose=False)
+            detected_cards = timed_call("board", detect_board, frame, verbose=False, save_unknown=False)
+            milestone("board_detected_s")
+            note(hero_observed=list(hero_detected), board_observed=list(detected_cards))
             # A mudança de dealer é evidência do ciclo, inclusive fora da vez.
             dealer_diagnostics = {"confidence": None, "reason": "detalhes não fornecidos"}
-            new_position = extract_hero_position(frame, verbose=False, diagnostics=dealer_diagnostics, hero_coords=getattr(app, 'hero_coords', None))
+            pot_diagnostics, identity_diagnostics = {}, {}
+            requests = (
+                ("pot_ocr", extract_pot, dict(default_value=None, verbose=False, diagnostics=pot_diagnostics)),
+                ("hand_ids_ocr", extract_hand_identity, dict(diagnostics=identity_diagnostics)),
+                ("buttons_ocr", detect_turn_and_bet_to_call, dict(verbose=False)),
+                ("dealer", extract_hero_position, dict(verbose=False, diagnostics=dealer_diagnostics,
+                                                     hero_coords=getattr(app, 'hero_coords', None))),
+            )
+            futures = [ocr_pool.submit(copy_context().run, timed_call, stage, function, frame, **options)
+                       for stage, function, options in requests]
+            observed_pot, observed_identity, turn_info, new_position = [future.result() for future in futures]
+            note(hero_turn=turn_info.get("is_hero_turn"), action_context=turn_info, dealer=dealer_diagnostics)
+            note(pot_reading=pot_diagnostics, hand_identity_reading=identity_diagnostics)
             try:
-                observed_opponents = detect_active_opponents(frame, hero_coords=getattr(app, 'hero_coords', None))
+                observed_opponents = timed_call("opponents", detect_active_opponents, frame, hero_coords=getattr(app, 'hero_coords', None))
             except Exception:
                 observed_opponents = None
             app._observe_action_context(turn_info)
@@ -1096,6 +1125,10 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
                                            action_context=turn_info, hero_position=new_position,
                                            dealer_diagnostics=dealer_diagnostics, observed_opponents=observed_opponents,
                                            hand_identity=observed_identity)
+            milestone("hand_observed_s")
+            note(hand_status=hand_status, state=app.state_machine.current_state.value,
+                 hand_generation=app.state_machine.hand_generation,
+                 reason=app.last_hand_observation["motivo"])
             if hand_status == "UNCERTAIN":
                 app.total_frames_processed += 1
                 app.total_uncertain_frames = getattr(app, "total_uncertain_frames", 0) + 1
@@ -1111,6 +1144,7 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
                     if missing:
                         print(f"Faltam: {'; '.join(missing)}.")
                 uncertain_count += 1
+                finish_cycle("recognition_unconfirmed" if not has_valid_detected or "Desconhecida" in detected_cards else "hand_uncertain")
                 time.sleep(poll_interval)
                 continue
 
@@ -1120,6 +1154,7 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
             if app.state_machine.current_state == HandState.WAITING_HAND and not already_has_valid_hand:
                 sys.stdout.write(f"\r{C_YELLOW}[AGUARDANDO INÍCIO DA PRÓXIMA MÃO...]{C_RESET}   ")
                 sys.stdout.flush()
+                finish_cycle("waiting_hand")
                 time.sleep(poll_interval)
                 continue
 
@@ -1128,13 +1163,16 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
                 status = "VEZ DO HERO NÃO CONFIRMADA / BOTÕES ILEGÍVEIS" if turn_info.get("action_type") == "UNKNOWN" else "AGUARDANDO SUA VEZ DE JOGAR..."
                 sys.stdout.write(f"\r{C_YELLOW}[{status}]{hand_str}{C_RESET}   ")
                 sys.stdout.flush()
+                finish_cycle("turn_unconfirmed" if turn_info.get("action_type") == "UNKNOWN" else "out_of_turn")
                 time.sleep(poll_interval)
                 continue
 
             bet_to_call = turn_info.get("bet_to_call")
-            if bet_to_call is None or (turn_info.get("action_type") == "CALL" and bet_to_call <= 0):
+            if ((bet_to_call is None and turn_info.get("action_type") != "ALL-IN")
+                    or (turn_info.get("action_type") == "CALL" and bet_to_call <= 0)):
                 sys.stdout.write(f"\r{C_YELLOW}[AÇÃO/VALOR DO CALL INCERTO - CHECK NÃO PRESUMIDO]{C_RESET}   ")
                 sys.stdout.flush()
+                finish_cycle("call_unconfirmed")
                 time.sleep(poll_interval)
                 continue
 
@@ -1148,7 +1186,7 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
             if new_position != "Desconhecida" and app.hero_position == "Desconhecida":
                 app.hero_position = new_position
 
-            app.hero_stack = extract_hero_stack(
+            app.hero_stack = timed_call("stack_ocr", extract_hero_stack,
                 frame,
                 last_stack=app.hero_stack,
                 hero_coords=getattr(app, 'hero_coords', None),
@@ -1161,11 +1199,17 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
                 show_dashboard=True,
                 action_context=turn_info,
             )
+            milestone("recommendation_emitted_s")
+            note(recommendation_available=analysis.get("action_available", False),
+                 equity_cached=analysis.get("equity_cached"), financial_valid=analysis.get("financial_valid"),
+                 reason=analysis.get("reason"))
             if debug_hands and analysis.get("observation_valid") is False:
                 print("[DEBUG ANÁLISE] " + json.dumps(dict(
                     captura_id=app.last_hand_observation["captura_id"],
                     resultado="SUSPENDED", motivo=analysis["reason"],
                     financeiro_observado=analysis.get("financial_observation")), ensure_ascii=False))
+            finish_cycle("financial_suspension" if analysis.get("financial_valid") is False else
+                         "recommendation" if analysis.get("action_available") else "informative_analysis")
             time.sleep(poll_interval)
 
     except KeyboardInterrupt:
@@ -1182,6 +1226,8 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
         print(f"  • Capturas com Contexto Incerto:     {uncertain}")
         print(f"  • Ciclos Otimizados por Cache:       {app.total_frames_processed - app.total_recalculations - uncertain}")
         print("=" * 83 + "\n")
+    finally:
+        ocr_pool.shutdown(wait=True)
 
 
 def main():
@@ -1326,12 +1372,15 @@ def main():
 if __name__ == "__main__":
     if "--live" in sys.argv or "-l" in sys.argv:
         poll = POLL_INTERVAL
+        profile_path = None
         for i, arg in enumerate(sys.argv):
+            if arg == "--profile-jsonl" and i + 1 < len(sys.argv):
+                profile_path = sys.argv[i + 1]
             if arg in ("--poll", "-p") and i + 1 < len(sys.argv):
                 try:
                     poll = float(sys.argv[i + 1])
                 except ValueError:
                     pass
-        run_live(poll_interval=poll, debug_hands="--debug-hands" in sys.argv)
+        run_live(poll_interval=poll, debug_hands="--debug-hands" in sys.argv, profile_jsonl=profile_path)
     else:
         main()

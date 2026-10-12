@@ -57,20 +57,21 @@ class TestActionText(unittest.TestCase):
                 self.assertEqual(parse_action_button_text(text)["bet_to_call"], amount)
         self.assertIsNone(parse_action_button_text("CALL 1.2.3")["bet_to_call"])
 
-    def test_fold_and_all_in_with_explicit_amount_is_call_payment(self):
+    def test_fold_and_all_in_amount_does_not_establish_call_payment(self):
         result = parse_action_button_text("DESISTO ALL-IN 970")
         self.assertTrue(result["is_hero_turn"])
-        self.assertEqual(result["action_type"], "CALL")
-        self.assertEqual(result["bet_to_call"], 970.0)
-        self.assertEqual(result.get("all_in_nature"), "CALL")
+        self.assertEqual(result["action_type"], "ALL-IN")
+        self.assertIsNone(result["bet_to_call"])
+        self.assertEqual(result["all_in_displayed_amount"], 970.0)
+        self.assertEqual(result.get("all_in_nature"), "UNKNOWN")
         self.assertEqual(result["available_actions"], ["FOLD", "ALL-IN"])
 
     def test_fold_and_all_in_without_amount_has_unconfirmed_cost(self):
         result = parse_action_button_text("FOLD ALL-IN")
         self.assertTrue(result["is_hero_turn"])
-        self.assertEqual(result["action_type"], "CALL")
+        self.assertEqual(result["action_type"], "ALL-IN")
         self.assertIsNone(result["bet_to_call"])
-        self.assertEqual(result.get("all_in_nature"), "CALL")
+        self.assertEqual(result.get("all_in_nature"), "UNKNOWN")
         self.assertEqual(result["available_actions"], ["FOLD", "ALL-IN"])
 
     def test_call_and_all_in_distinguishes_raise_from_call_payment(self):
@@ -101,7 +102,7 @@ class TestActionText(unittest.TestCase):
             with self.subTest(text=text):
                 res = parse_action_button_text(text)
                 self.assertIsNone(res["bet_to_call"])
-                self.assertEqual(res.get("all_in_nature"), "CALL")
+                self.assertEqual(res.get("all_in_nature"), "UNKNOWN")
 
 
 class TestVisualTurn(unittest.TestCase):

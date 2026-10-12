@@ -289,7 +289,7 @@ def parse_action_button_text(raw_text: str) -> Dict[str, Any]:
         elif "CALL" in actions:
             all_in_nature = "RAISE"
         elif actions == ["FOLD", "ALL-IN"]:
-            all_in_nature = "CALL"
+            all_in_nature = "UNKNOWN"
         else:
             all_in_nature = "UNKNOWN"
 
@@ -304,10 +304,10 @@ def parse_action_button_text(raw_text: str) -> Dict[str, Any]:
         action_type = "CALL"
         if len(call_values) == 1:
             bet = call_values[0]
-    elif "ALL-IN" in actions and all_in_nature == "CALL":
-        action_type = "CALL"
-        if len(all_in_values) == 1:
-            bet = all_in_values[0]
+    elif actions == ["FOLD", "ALL-IN"]:
+        # O Replay pode exibir o total da street, incluindo contribuição já
+        # feita. O texto sozinho não estabelece CALL incremental/pote elegível.
+        action_type = "ALL-IN"
     else:
         action_type = "UNKNOWN"
 
@@ -319,6 +319,8 @@ def parse_action_button_text(raw_text: str) -> Dict[str, Any]:
     }
     if all_in_nature is not None:
         result["all_in_nature"] = all_in_nature
+        result["all_in_displayed_amount"] = all_in_values[0] if len(all_in_values) == 1 else None
+        result["all_in_amount_semantics"] = "UNCONFIRMED"
     return result
 
 
