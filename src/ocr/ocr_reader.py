@@ -100,11 +100,19 @@ def extract_pot(
     _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
 
     tess_config = f"--psm 6 -c tessedit_char_whitelist={OCR_WHITELIST_DIGITS}"
-    raw_text = pytesseract.image_to_string(thresh, config=tess_config)
+    raw_text = pytesseract.image_to_string(thresh, config=tess_config) or ""
 
     if not raw_text.strip():
         _, otsu_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        raw_text = pytesseract.image_to_string(otsu_thresh, config=tess_config)
+        raw_text = pytesseract.image_to_string(otsu_thresh, config=tess_config) or ""
+
+    if not raw_text.strip():
+        # Dígitos pequenos no badge do Replay podem ser ignorados mesmo com
+        # a ROI correta. Amplia os pixels da captura atual, sem estimar fichas
+        # nem substituir leituras existentes. Mantém segmentação e whitelist.
+        enlarged = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        _, enlarged_thresh = cv2.threshold(enlarged, 180, 255, cv2.THRESH_BINARY)
+        raw_text = pytesseract.image_to_string(enlarged_thresh, config=tess_config) or ""
 
     lines = [l.strip() for l in raw_text.strip().splitlines() if l.strip()]
     pot_value = None
