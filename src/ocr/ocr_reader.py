@@ -67,6 +67,68 @@ def _parse_pot_reading(raw_text: str) -> Tuple[Optional[float], str]:
     return float(match.group(1).replace(",", "").replace(".", "")), "NUMERIC"
 
 
+def _recover_pot_conflict(gray: np.ndarray, readings: list) -> Tuple[Optional[float], Dict[str, Any]]:
+    """Recupera somente perda de glifos comprovada na linha isolada do valor.
+
+    Não resolve dígitos diferentes com o mesmo comprimento nem por maioria.
+    Exige componentes separados, alinhados e estáveis nos dois limiares.
+    Recortes nas bordas e geometria incompatível mantêm a captura incerta;
+    isso não constitui um classificador universal de dígitos/fontes.
+    """
+    evidence = dict(status="UNRESOLVED", reason="Linha numérica/glifos sem cobertura verificável.")
+    fixed = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)[1]
+    otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    rows = np.flatnonzero(np.any(fixed, axis=1))
+    bands = np.split(rows, np.where(np.diff(rows) > 1)[0] + 1)
+    if len(bands) < 2 or not len(bands[-1]):
+        return None, evidence
+    top, bottom = int(bands[-1][0]), int(bands[-1][-1]) + 1
+    if top == 0 or bottom == gray.shape[0]:
+        return None, evidence
+    glyphs = []
+    for mask in (fixed, otsu):
+        stats = cv2.connectedComponentsWithStats(mask[top:bottom])[2][1:]
+        if (not len(stats) or np.any(stats[:, cv2.CC_STAT_TOP] != 0)
+                or np.any(stats[:, cv2.CC_STAT_HEIGHT] != bottom - top)
+                or np.any(stats[:, cv2.CC_STAT_LEFT] == 0)
+                or np.any(stats[:, cv2.CC_STAT_LEFT] + stats[:, cv2.CC_STAT_WIDTH] >= gray.shape[1])):
+            return None, evidence
+        glyphs.append(stats)
+    if len(glyphs[0]) != len(glyphs[1]):
+        return None, evidence
+    count = len(glyphs[0])
+    evidence["glyph_count"] = count
+    values = {r["value"] for r in readings if r["value"] is not None}
+    compatible = {v for v in values if math.isfinite(v) and len(str(int(v))) == count}
+    if len(compatible) != 1:
+        evidence["reason"] = "Mais de um valor cobre os glifos, ou nenhum os cobre; conflito mantido."
+        return None, evidence
+
+    left = min(int(s[:, cv2.CC_STAT_LEFT].min()) for s in glyphs)
+    right = max(int((s[:, cv2.CC_STAT_LEFT] + s[:, cv2.CC_STAT_WIDTH]).max()) for s in glyphs)
+    # Margem proporcional à altura do texto, sem alcançar a linha do rótulo.
+    pad = min((bottom - top) // 3, (top - int(bands[-2][-1]) - 1) // 2)
+    y1, y2 = max(0, top-pad), min(gray.shape[0], bottom+pad)
+    x1, x2 = max(0, left-pad), min(gray.shape[1], right+pad)
+    evidence["number_roi"] = dict(top=y1, left=x1, width=x2-x1, height=y2-y1)
+    isolated = cv2.resize(gray[y1:y2, x1:x2], None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    binary = cv2.threshold(isolated, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    raw_text = pytesseract.image_to_string(
+        binary, config=f"--psm 7 -c tessedit_char_whitelist={OCR_WHITELIST_DIGITS}") or ""
+    value, status = _parse_pot_reading(raw_text)
+    readings.append(dict(method="isolated_otsu", raw_text=raw_text, value=value, status=status))
+    token = raw_text.strip()
+    if (re.fullmatch(r"[0-9]+", token) is None or len(token) != count
+            or value not in compatible):
+        evidence["reason"] = "OCR isolado não confirma o único valor compatível com todos os glifos."
+        return None, evidence
+    for reading in readings:
+        if reading["value"] is not None and reading["value"] != value:
+            reading["rejection_reason"] = f"Leitura não cobre os {count} glifos observados na linha do valor."
+    evidence.update(status="RESOLVED", reason="OCR da linha isolada confirma cobertura integral dos glifos.")
+    return value, evidence
+
+
 def extract_pot(
     image_path_or_frame: Union[str, Path, np.ndarray] = "mesa_6.png",
     pot_roi: Optional[Dict[str, int]] = None,
@@ -77,9 +139,10 @@ def extract_pot(
     """
     Extrai o pote confrontando pré-processamentos da MESMA captura, sem histórico.
 
-    Leituras não vazias não podem conflitar nem conter tokens malformados.
+    Leituras conflitantes exigem evidência visual adicional na linha do valor.
+    Tokens malformados permanecem incertos; não há votação por maioria.
     Uma variante vazia não refuta outra; concordância não garante acerto do OCR.
-    Conflitos retornam None mesmo com default_value; --live usa default_value=None.
+    Conflitos não resolvidos retornam None mesmo com default_value; --live usa None.
     """
     if diagnostics is not None:
         diagnostics.clear()
@@ -144,9 +207,21 @@ def extract_pot(
     else:
         status, reason = "READ", "Leitura numérica sem divergências nos pré-processamentos disponíveis."
 
+    resolution = None
+    if status == "CONFLICT":
+        recovered, resolution = _recover_pot_conflict(gray, readings)
+        if recovered is not None:
+            pot_value = recovered
+            if pot_value > MAX_REALISTIC_POT:
+                status, reason = "INVALID", "Valor do pote fora da validação de sanidade existente."
+            else:
+                status, reason = "READ", resolution["reason"]
+
     if diagnostics is not None:
         diagnostics.update(status=status, reason=reason, readings=readings,
                            roi=dict(top=y1, left=x1, width=x2-x1, height=y2-y1))
+        if resolution is not None:
+            diagnostics["resolution"] = resolution
     if status != "READ":
         if verbose:
             print(f"[AVISO OCR] {reason} Leituras: {readings}")

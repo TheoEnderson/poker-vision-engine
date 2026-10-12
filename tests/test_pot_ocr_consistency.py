@@ -29,7 +29,9 @@ def pot_55_frame():
 
 class TestPotOCRConsistency(unittest.TestCase):
     def read(self, outputs, **kwargs):
-        with patch.object(ocr_reader.pytesseract, "image_to_string", side_effect=outputs):
+        # A tentativa adicional, quando houver geometria suficiente, fica
+        # ilegível nestes cenários: conflito NÃO é resolvido por concordância.
+        with patch.object(ocr_reader.pytesseract, "image_to_string", side_effect=list(outputs) + [""]):
             return ocr_reader.extract_pot(pot_55_frame(), default_value=None, verbose=False, **kwargs)
 
     def test_real_55_and_previous_13(self):
@@ -83,15 +85,16 @@ class TestPotOCRConsistency(unittest.TestCase):
         self.assertEqual(self.read(["5", "5", "5"]), 5)  # Sem monotonicidade inventada.
 
     def test_conflict_does_not_return_previous_default_value(self):
-        with patch.object(ocr_reader.pytesseract, "image_to_string", side_effect=["5", "55", "55"]):
+        with patch.object(ocr_reader.pytesseract, "image_to_string", side_effect=["5", "55", "55", ""]):
             self.assertIsNone(ocr_reader.extract_pot(pot_55_frame(), default_value=100, verbose=False))
 
     def test_optional_diagnostics_explain_conflict_and_preserve_raw_evidence(self):
         diagnostics = {}
         self.assertIsNone(self.read(["5\n", "55\n", "55\n"], diagnostics=diagnostics))
         self.assertEqual(diagnostics["status"], "CONFLICT")
-        self.assertEqual([r["raw_text"] for r in diagnostics["readings"]], ["5\n", "55\n", "55\n"])
-        self.assertEqual([r["value"] for r in diagnostics["readings"]], [5, 55, 55])
+        self.assertEqual([r["raw_text"] for r in diagnostics["readings"][:3]], ["5\n", "55\n", "55\n"])
+        self.assertEqual([r["value"] for r in diagnostics["readings"][:3]], [5, 55, 55])
+        self.assertEqual(diagnostics["readings"][-1]["status"], "EMPTY")
 
 
 class TestPotConflictFinancialIntegration(unittest.TestCase):
@@ -99,7 +102,7 @@ class TestPotConflictFinancialIntegration(unittest.TestCase):
     live = cycle.TestHandCycleIntegration.live
 
     def test_conflict_suspends_finances_and_recovers_without_repeating_equity(self):
-        with patch.object(ocr_reader.pytesseract, "image_to_string", side_effect=["5", "5", "55"]):
+        with patch.object(ocr_reader.pytesseract, "image_to_string", side_effect=["5", "5", "55", ""]):
             conflict = ocr_reader.extract_pot(pot_55_frame(), default_value=None, verbose=False)
         hero = ["5d", "6s"]
         self.app.hero_cards = list(hero)
