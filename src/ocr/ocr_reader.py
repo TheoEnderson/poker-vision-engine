@@ -106,24 +106,27 @@ def extract_pot(
         _, otsu_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         raw_text = pytesseract.image_to_string(otsu_thresh, config=tess_config)
 
-    clean_text = raw_text.strip().replace(",", "").replace(".", "")
+    lines = [l.strip() for l in raw_text.strip().splitlines() if l.strip()]
+    pot_value = None
+    for line in reversed(lines):
+        clean_line = line.replace(",", "").replace(".", "")
+        if not clean_line:
+            continue
+        try:
+            val = float(clean_line)
+            pot_value = val
+            break
+        except ValueError:
+            m = re.search(r"\d+", clean_line)
+            if m:
+                pot_value = float(m.group(0))
+                break
 
-    if not clean_text:
+    if pot_value is None:
         if verbose:
             print("[AVISO OCR] Nenhum dígito legível identificado na região do pote. Retornando padrão seguro.")
         return default_value
 
-    try:
-        pot_value = float(clean_text)
-    except ValueError:
-        digits_match = re.search(r"\d+", clean_text)
-        if digits_match:
-            pot_value = float(digits_match.group(0))
-        else:
-            pot_value = default_value
-
-    if pot_value is None:
-        return default_value
     if pot_value > MAX_REALISTIC_POT:
         if verbose:
             print(f"[AVISO OCR] Leitura do Pote exorbitante ({pot_value}). Retornando valor seguro anterior.")
