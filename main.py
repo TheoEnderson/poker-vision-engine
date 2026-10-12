@@ -493,8 +493,11 @@ class PokerAnalyticsApp:
     def _financial_context_error(self, pot, call, context) -> Optional[str]:
         """Não estima fichas nem converte aposta nominal em call all-in."""
         if context and context.get("action_type") == "ALL-IN":
-            return ("ALL-IN observado: valor exibido não confirma custo incremental, contribuição anterior "
-                    "ou pote elegível (possíveis devoluções/side pots). Análise financeira suspensa.")
+            displayed = context.get("all_in_displayed_amount")
+            amount_text = f"{displayed:g}" if _valid_chip_amount(displayed) else "ilegível"
+            return (f"ALL-IN reconhecido (valor exibido: {amount_text}). Cenário financeiro não suportado: "
+                    "custo incremental, contribuição anterior e pote elegível não confirmados "
+                    "(possíveis devoluções/side pots). O valor exibido não foi convertido em CALL adicional.")
         if not _valid_chip_amount(self.hero_stack):
             return "Stack não confirmado ou inválido na captura atual."
         if not _valid_chip_amount(pot):
@@ -652,6 +655,7 @@ class PokerAnalyticsApp:
             if financial_error:
                 analysis.update({
                     "financial_valid": False,
+                    "financial_status": "UNSUPPORTED_ALL_IN" if context and context.get("action_type") == "ALL-IN" else "UNCONFIRMED",
                     "financial_observation": dict(hero_stack=self.hero_stack, pot_size=pot_size, bet_to_call=bet_to_call),
                     "action": "AGUARDANDO CONTEXTO FINANCEIRO",
                     "reason": financial_error,
@@ -890,7 +894,10 @@ class PokerAnalyticsApp:
     def render_dashboard(self, a: Dict[str, Any], cached: bool = False):
         """Renderiza o painel visual formatado no terminal com cores ANSI."""
         if a.get("observation_valid") is False:
-            print("\n[CAPTURA INCERTA - SEM RECOMENDAÇÃO ATUAL]")
+            if a.get("financial_status") == "UNSUPPORTED_ALL_IN":
+                print("\n[CENÁRIO FINANCEIRO NÃO SUPORTADO - SEM RECOMENDAÇÃO ATUAL]")
+            else:
+                print("\n[CAPTURA INCERTA - SEM RECOMENDAÇÃO ATUAL]")
             print(f"Último estado/board válido: {a['state']} | {a['board']}")
             if a.get("financial_valid") is False:
                 print(f"Valores recebidos (não validados): {a['financial_observation']}")

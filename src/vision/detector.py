@@ -521,7 +521,7 @@ def find_and_detect_hero_cards(
             continue
         if area > 1500:
             diagnostics["contours"].append(dict(box=[cbx, cby, cbw, cbh], area=area))
-        if area > 1500 and 40 < cbw < 250 and cbh >= 120:
+        if area > 1500 and 40 < cbw < 250 and (cbh >= 120 or cbw >= 120):
             # Nas capturas reais, a borda estreita do avatar une-se à carta.
             # A abertura 5x5 separa essa borda (3x3 não basta) SOMENTE da
             # máscara de localização; os pixels usados na classificação são
@@ -529,11 +529,18 @@ def find_and_detect_hero_cards(
             component = white_u8[cby:cby + cbh, cbx:cbx + cbw]
             separated = cv2.morphologyEx(component, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
             parts, _ = cv2.findContours(separated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            recovered = False
             for part in parts:
                 px, py, pw, ph = cv2.boundingRect(part)
                 if 1500 < cv2.contourArea(part) < 10000 and 40 < pw < 120 and 40 < ph < 120:
                     candidates.append((cbx + px, cby + py, pw, ph))
                     diagnostics.setdefault("separated_cards", []).append([cbx + px, cby + py, pw, ph])
+                    recovered = True
+            if recovered:
+                # A borda animada também produz caixas largas de 106/116 px
+                # de altura. Não reutiliza essa caixa como suposto par unido:
+                # ela deslocaria os recortes de rank/naipe das cartas reais.
+                continue
         if 1500 < area < 10000 and 40 < cbw < 120 and 40 < cbh < 120:
             candidates.append((cbx, cby, cbw, cbh))
         elif 3000 < area < 20000 and 120 < cbw < 250 and 40 < cbh < 120:
