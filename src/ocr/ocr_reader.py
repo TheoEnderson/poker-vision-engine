@@ -499,7 +499,8 @@ def extract_hero_stack(
 
 
 def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], verbose: bool = False,
-                          diagnostics: Optional[Dict[str, Any]] = None) -> str:
+                          diagnostics: Optional[Dict[str, Any]] = None,
+                          hero_coords: Optional[Dict[str, int]] = None) -> str:
     """
     Identifica a posição do Hero na mesa (BTN, SB, BB, UTG, MP, CO)
     baseado na posição do botão de Dealer (D) e do nome do Hero.
@@ -525,25 +526,58 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
         return "Desconhecida"
 
     template = cv2.imread(str(template_path))
+    th, tw = template.shape[:2]
+    dealer_angle = 0.0
+    dealer_found = False
+    best_score = 0.0
+
     # Em mesas full-screen (w >= 600, h >= 400), foca na área da mesa para evitar falso positivo em barras periféricas
     if w >= 600 and h >= 400:
         y_offset, x_offset = 50, 60
         search_img = img[y_offset:h - 80, x_offset:w - 60]
+        res = cv2.matchTemplate(search_img, template, cv2.TM_CCOEFF_NORMED)
+        locs = np.where(res >= DEFAULT_DEALER_THRESHOLD)
+        candidates = []
+        for y, x in zip(locs[0], locs[1]):
+            val = float(res[y, x])
+            gy = y + y_offset
+            gx = x + x_offset
+            if gy > 0.85 * h or gy < 0.08 * h:
+                continue
+            if gx < 350 and gy > 0.75 * h:
+                continue
+            patch = search_img[y:y+th, x:x+tw]
+            p_max = int(np.max(patch))
+            p_min = int(np.min(patch))
+            # O botão de dealer é um disco claro/branco de alto contraste; descarta feltro plano
+            if p_max >= 180 and (p_max - p_min) >= 90:
+                candidates.append((val, gx + tw // 2, gy + th // 2))
+
+        if candidates:
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            best_score, dealer_x, dealer_y = candidates[0]
+            dealer_angle = math.degrees(math.atan2(dealer_y - cy, dealer_x - cx))
+            dealer_found = True
+        else:
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            best_score = float(max_val)
     else:
         y_offset, x_offset = 0, 0
         search_img = img
+        res = cv2.matchTemplate(search_img, template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        best_score = float(max_val)
+        if max_val >= DEFAULT_DEALER_THRESHOLD:
+            dealer_x = max_loc[0] + x_offset + tw // 2
+            dealer_y = max_loc[1] + y_offset + th // 2
+            dealer_angle = math.degrees(math.atan2(dealer_y - cy, dealer_x - cx))
+            dealer_found = True
 
-    res = cv2.matchTemplate(search_img, template, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, max_loc = cv2.minMaxLoc(res)
     if diagnostics is not None:
-        diagnostics.update(confidence=float(max_val), reason="score do dealer abaixo do limiar")
+        diagnostics.update(confidence=best_score,
+                           reason="dealer detectado" if dealer_found else "score do dealer abaixo do limiar")
 
-    dealer_angle = 0.0
-    if max_val >= DEFAULT_DEALER_THRESHOLD:
-        dealer_x = max_loc[0] + x_offset + template.shape[1] // 2
-        dealer_y = max_loc[1] + y_offset + template.shape[0] // 2
-        dealer_angle = math.degrees(math.atan2(dealer_y - cy, dealer_x - cx))
-    else:
+    if not dealer_found:
         if verbose:
             print("[AVISO OCR] Botão de Dealer não detectado na tela.")
         return "Desconhecida"
@@ -555,12 +589,23 @@ def extract_hero_position(image_path_or_frame: Union[str, Path, np.ndarray], ver
     hero_angle = 0.0
     found_hero = False
 
-    if last_hero_name_coords is not None:
+    if hero_coords is not None:
+        hx = hero_coords.get("left", 0)
+        hy = hero_coords.get("top", 0)
+        hw = hero_coords.get("width", 0)
+        hh = hero_coords.get("height", 0)
+        if hw > 0 and hh > 0:
+            center_hx = hx + hw // 2
+            center_hy = hy + hh // 2
+            hero_angle = math.degrees(math.atan2(center_hy - cy, center_hx - cx))
+            found_hero = True
+
+    if not found_hero and last_hero_name_coords is not None:
         bx1, by1, bx2, by2 = last_hero_name_coords
         center_hx, center_hy = (bx1 + bx2) // 2, (by1 + by2) // 2
         hero_angle = math.degrees(math.atan2(center_hy - cy, center_hx - cx))
         found_hero = True
-    else:
+    elif not found_hero:
         id_lower = HERO_IDENTIFIER.lower()
         id_clean = re.sub(r"[^a-z0-9]", "", id_lower)
         raw_parts = [re.sub(r"[^a-z0-9]", "", p) for p in re.split(r"[_ \-]+", id_lower)]

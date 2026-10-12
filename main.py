@@ -324,6 +324,8 @@ class PokerAnalyticsApp:
                 print(f"\n[INFO] {reason}")
                 self.reset_hand(hero_cards=hero_cards, reason=reason)
                 self._hand_position = position
+                if position:
+                    self.hero_position = position
                 self.state_machine.update_board(board, has_hero_cards=True)
                 return report("NEW_HAND", reason)
             return report("UNCERTAIN", "Redistribuição candidata; aguardando observação compatível")
@@ -344,14 +346,14 @@ class PokerAnalyticsApp:
             return report("UNCERTAIN", "Hero/board não reconhecido por completo; ciclo da mão não confirmado")
         if changed:
             return report("UNCERTAIN", "Cartas do Hero divergentes sem encerramento confirmado ou redistribuição corroborada")
-        if dealer_changed:
-            return report("UNCERTAIN", "Dealer/posição divergente sem redistribuição corroborada")
         if in_preflop and boundary and clear and not dealer_unchanged:
             return report("UNCERTAIN", "Retorno do Hero após intervalo ambíguo: sem encerramento confirmado nem dealer compatível")
         if boundary and clear and not in_preflop:
             return report("UNCERTAIN", "Intervalo observado, mas redistribuição ainda indistinguível de falha visual")
         if not self.state_machine.update_board(board, has_hero_cards=True):
             return report("UNCERTAIN", "Board incompatível com a mão conhecida; reset não confirmado")
+        if dealer_changed:
+            return report("UNCERTAIN", "Dealer/posição divergente sem redistribuição corroborada")
         self._hero_was_absent = False
         self._hand_boundary_seen = False
         self._redeal_gap_seen = False
@@ -362,6 +364,8 @@ class PokerAnalyticsApp:
         self._away_board_witness = None
         if hand_position is None:
             self._hand_position = position
+            if position:
+                self.hero_position = position
         return report("CURRENT", "Captura compatível com a mão conhecida")
 
     def process_frame(
@@ -422,7 +426,7 @@ class PokerAnalyticsApp:
 
         if actual_pot is None and not self.auto_detect_pot:
             actual_pot = 85.0
-        new_position = extract_hero_position(frame_or_path, verbose=False)
+        new_position = extract_hero_position(frame_or_path, verbose=False, hero_coords=getattr(self, 'hero_coords', None))
         if new_position != "Desconhecida" and self.hero_position == "Desconhecida":
             self.hero_position = new_position
 
@@ -1043,7 +1047,7 @@ def run_live(poll_interval: float = POLL_INTERVAL, debug_hands: bool = False):
             turn_info = detect_turn_and_bet_to_call(frame, verbose=False)
             # A mudança de dealer é evidência do ciclo, inclusive fora da vez.
             dealer_diagnostics = {"confidence": None, "reason": "detalhes não fornecidos"}
-            new_position = extract_hero_position(frame, verbose=False, diagnostics=dealer_diagnostics)
+            new_position = extract_hero_position(frame, verbose=False, diagnostics=dealer_diagnostics, hero_coords=getattr(app, 'hero_coords', None))
             try:
                 observed_opponents = detect_active_opponents(frame, hero_coords=getattr(app, 'hero_coords', None))
             except Exception:
